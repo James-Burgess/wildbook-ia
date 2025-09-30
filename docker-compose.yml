@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  wbia:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: wbia-simple:latest
+    container_name: wbia-app
+    ports:
+      - "5001:5000"
+    volumes:
+      - wbia_data:/data/db
+      - wbia_cache:/cache
+    environment:
+      - PYTHONUNBUFFERED=1
+      - WBIA_WEB_PORT=5000
+    restart: no
+    stdin_open: true
+    tty: true
+
+  # Optional: PostgreSQL database (uncomment if needed instead of SQLite)
+  # db:
+  #   image: postgres:13
+  #   container_name: wbia-postgres
+  #   environment:
+  #     - POSTGRES_DB=wbia
+  #     - POSTGRES_USER=wbia
+  #     - POSTGRES_PASSWORD=wbia_password
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #   ports:
+  #     - "5432:5432"
+  #   restart: unless-stopped
+
+volumes:
+  wbia_data:
+    driver: local
+  wbia_cache:
+    driver: local
+  # postgres_data:
+  #   driver: local
+
+networks:
+  default:
+    name: wbia-network
