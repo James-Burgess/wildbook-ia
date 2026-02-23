@@ -1,6 +1,6 @@
 ARG WBIA_FINAL_IMAGE=wildme/wbia:latest
 
-FROM ${WBIA_FINAL_IMAGE} AS org.wildme.wbia.latest
+FROM ${WBIA_FINAL_IMAGE} as org.wildme.wbia.latest
 
 COPY ./ /wbia/wildbook-ia
 
@@ -14,8 +14,15 @@ RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
  && pip install --no-cache-dir -r /wbia/wildbook-ia/requirements/postgres.txt \
  && pip install --no-cache-dir -e .'
 
-COPY devops/smoke_plugins.py /tmp/smoke_plugins.py
+# Temporary fix for ARM64
+ENV LD_PRELOAD "/virtualenv/env3/lib/python3.7/site-packages/torch/lib/libgomp-d22c30c5.so.1"
 
 RUN set -ex \
- && /virtualenv/env3/bin/python -c "import wbia; from wbia.__main__ import smoke_test; smoke_test()" \
- && /virtualenv/env3/bin/python /tmp/smoke_plugins.py || true
+
+ && /virtualenv/env3/bin/python -c "import wbia; from wbia.__main__ import smoke_test; smoke_test()"
+
+# Undo Fix
+ENV LD_PRELOAD ""
+
+ # Update locate database
+RUN updatedb

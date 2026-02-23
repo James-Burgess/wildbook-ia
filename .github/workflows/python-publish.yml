@@ -3,16 +3,13 @@ name: Build and upload to PyPI
 # Build on every branch push, tag push, and pull request change:
 on: push
 
-env:
-  MODEL_DIR: ${{ github.workspace }}/models
-  MODEL_SAS_QUERY: ${{ secrets.MODEL_SAS_QUERY }}
 jobs:
 
   build_wheels:
     name: Build on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
         python-version: [3.8]
@@ -37,9 +34,11 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: wheel-${{ matrix.os }}
+          name: wheel-artifact-${{ github.run_number }}
           path: ./dist/*.whl
-    
+          overwrite: true
+
+
   build_sdist:
     name: Build source distribution
     runs-on: ubuntu-latest
@@ -57,10 +56,10 @@ jobs:
           pip install build
           rm -rf dist && mkdir dist
           python -m build --sdist --outdir dist/ .
-
+         
       - uses: actions/upload-artifact@v4
         with:
-          name: sdist
+          name: sdist-artifact-${{ github.run_number }}
           path: ./dist/*.tar.gz
           overwrite: true
 
@@ -71,8 +70,9 @@ jobs:
     # upload to PyPI on every tag starting with 'v'
     if: github.event_name == 'push' && startsWith(github.event.ref, 'refs/tags/v')
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v2
         with:
+          name: artifact
           path: dist
 
       - uses: pypa/gh-action-pypi-publish@master
