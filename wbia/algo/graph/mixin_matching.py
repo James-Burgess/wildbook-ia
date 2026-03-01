@@ -271,6 +271,28 @@ class AnnotInfrMatching(object):
             edges = set(edges)
             return edges
         # </HACK>
+        # <HACK FOR hybrid>
+        if cfgdict.get('pipeline_root', None) in ['Hybrid']:
+
+            globals().update(locals())
+
+            edges = []
+
+            for qaid in tqdm.tqdm(qaids):
+                daids_ = list(set(daids) - {qaid})
+                score_list = ibs.hybrid_match_scores(qaid, daids_)
+                values = sorted(zip(score_list, daids_))[::-1]
+                keep = values[:ranks_top]
+                daid_list = ut.take_column(keep, 1)
+                for daid in daid_list:
+                    u, v = (qaid, daid)
+                    if v < u:
+                        u, v = v, u
+                    edges.append((u, v))
+
+            edges = set(edges)
+            return edges
+        # </HACK>
 
         if batch_size is not None:
             qaids_chunks = list(ut.ichunks(qaids, batch_size))

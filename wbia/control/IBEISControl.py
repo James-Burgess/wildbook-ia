@@ -175,6 +175,11 @@ if ut.get_argflag('--lightglue'):
         (('--no-lightglue', '--nolightglue'), 'wbia_lightglue._plugin'),
     ]
 
+if ut.get_argflag('--hybrid'):
+    AUTOLOAD_PLUGIN_MODNAMES += [
+        (('--no-hybrid', '--nohybrid'), 'wbia_hybrid._plugin'),
+    ]
+
 if ut.get_argflag('--whaleridgefindr'):
     AUTOLOAD_PLUGIN_MODNAMES += [
         (('--no-whaleridgefindr', '--nowhaleridgefindr'), 'wbia_whaleridgefindr._plugin'),
@@ -226,6 +231,8 @@ for modname in ut.ProgIter(
             ub.import_module_from_path('/wbia/wbia-plugin-miew-id/wbia_miew_id/__init__.py')
         elif modname == 'wbia_lightglue._plugin':
             ub.import_module_from_path('/wbia/wbia-plugin-lightglue/wbia_lightglue/__init__.py')
+        elif modname == 'wbia_hybrid._plugin':
+            ub.import_module_from_path('/wbia/wbia-plugin-hybrid/wbia_hybrid/__init__.py')
         elif modname == 'wbia_whaleridgefindr._plugin':
             ub.import_module_from_path('/wbia/wbia-plugin-whaleridgefindr/wbia_whaleridgefindr/__init__.py')
         else:

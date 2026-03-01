@@ -459,6 +459,7 @@ def review_graph_match_html(
         'pietwo',
         'miewid',
         'lightglue',
+        'hybrid',
         'whaleridgefindr'
     ):
         cls = chip_match.AnnotMatch  # ibs.depc_annot.requestclass_dict['BC_DTW']
@@ -598,6 +599,8 @@ def review_query_chips_test(**kwargs):
         query_config_dict = {'pipeline_root': 'MiewId'}
     elif 'use_lightglue' in request.args:
         query_config_dict = {'pipeline_root': 'LightGlue'}
+    elif 'use_hybrid' in request.args:
+        query_config_dict = {'pipeline_root': 'Hybrid'}
     elif 'use_whaleridgefindr' in request.args:
         query_config_dict = {'pipeline_root': 'whaleridgefindr'}
     else:
