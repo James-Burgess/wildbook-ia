@@ -3,24 +3,29 @@ ARG WBIA_BASE_IMAGE=wildme/wbia-base:latest
 ARG WBIA_PROVISION_IMAGE=wildme/wbia-provision:latest
 
 FROM ${WBIA_PROVISION_IMAGE} as org.wildme.wbia.latest
+
+ARG VCS_REF="main"
+
 # Grab latest code
 RUN set -ex \
  && git config --global user.email "dev@wildme.org" \
  && git config --global user.name "Wild Me" \
  && find /wbia/wbia* -name '.git' -type d -print0 | xargs -0 -i /bin/bash -c \
-    'cd {} && cd .. && echo $(pwd) && git reset --hard origin/main && git pull' \
+    'cd {} && cd .. && echo $(pwd) && git reset --hard origin/main && git pull || echo "SKIP (no remote): $(pwd)"' \
 
  && cd /wbia/wbia-plugin-lca/wbia_lca \
+ && git reset --hard origin/main \
+ && git pull \
+ && cd /wbia/wbia-plugin-hybrid/wbia_hybrid \
  && git reset --hard origin/main \
  && git pull \
  && cd /wbia/wbia-plugin-orientation/ \
  && git reset --hard origin/main \
  && git pull \
  && cd /wbia/wildbook-ia/ \
- && git fetch \
- && git reset --hard origin/main  \
- && git config pull.rebase true \
- && git pull
+ && git fetch origin ${VCS_REF} \
+ && git checkout ${VCS_REF} \
+ && git reset --hard origin/${VCS_REF}
 
 ##########################################################################################
 
@@ -138,6 +143,8 @@ RUN set -ex \
  && /virtualenv/env3/bin/python -c "import wbia_blend;       from wbia_blend._plugin import *" \
  && /virtualenv/env3/bin/python -c "import wbia_orientation; from wbia_orientation.__main__ import main; main()" \
  && /virtualenv/env3/bin/python -c "import wbia_lca;         from wbia_lca._plugin         import *" \
+ && /virtualenv/env3/bin/python -c "import wbia_lightglue;   from wbia_lightglue._plugin   import *" \
+ && /virtualenv/env3/bin/python -c "import wbia_hybrid;      from wbia_hybrid._plugin      import *" \
  && find /wbia/wbia* -name '*.a' -print      | grep -v "cpython-37m-x86_64-linux-gnu" | grep -v "cpython-37m-aarch64-linux-gnu.so" | xargs -i /bin/bash -c 'echo {} && ld -d {}' \
  && find /wbia/wbia* -name '*.so' -print     | grep -v "cpython-37m-x86_64-linux-gnu" | grep -v "cpython-37m-aarch64-linux-gnu.so" | xargs -i /bin/bash -c 'echo {} && ld -d {}' \
  && find /wbia/wildbook* -name '*.a' -print  | grep -v "cpython-37m-x86_64-linux-gnu" | grep -v "cpython-37m-aarch64-linux-gnu.so" | xargs -i /bin/bash -c 'echo {} && ld -d {}' \

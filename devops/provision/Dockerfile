@@ -46,6 +46,15 @@ RUN set -ex \
  && git fetch origin \
  && git checkout main
 
+# Clone LightGlue and Hybrid plug-in repositories
+RUN set -ex \
+ && cd /wbia \
+ && git clone https://github.com/WildMeOrg/wbia-plugin-lightglue.git \
+ && git clone --recursive https://github.com/WildMeOrg/wbia-plugin-hybrid.git \
+ && cd /wbia/wbia-plugin-hybrid/wbia_hybrid \
+ && git fetch origin \
+ && git checkout main
+
 # Deprecated plugins removed: kaggle7, deepsense, whaleridgefindr, finfindr, curvrank, pie (v1)
 
 RUN set -ex \
@@ -125,6 +134,14 @@ RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
 
 RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
  && cd /wbia/wbia-plugin-orientation \
+ && pip install --no-cache-dir -e .'
+
+RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
+ && cd /wbia/wbia-plugin-lightglue \
+ && pip install --no-cache-dir -e .'
+
+RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
+ && cd /wbia/wbia-plugin-hybrid \
  && pip install --no-cache-dir -e .'
 
 # Ensure no previous or deprecated repositories are installed
