@@ -46,11 +46,6 @@ rm -rf ${HOME_FOLDER}/.cache
 ln -s -T /cache ${HOME_FOLDER}/.cache
 chown ${HOST_USER}:${HOST_USER} ${HOME_FOLDER}/.cache/
 
-if [ "${HOST_USER}" != "root" ]; then
-    cp /root/.theanorc ${HOME_FOLDER}/.theanorc
-fi
-
-chown ${HOST_USER}:${HOST_USER} ${HOME_FOLDER}/.theanorc
 # Hotfixes!
 
 # Web error wbia.control.controller_inject.WebMatchThumbException, old symlinks expecting /data/docker to exist

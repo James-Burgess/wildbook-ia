@@ -1,7 +1,7 @@
 
 export CODE=/home/$( whoami )/code
 
-export VENV=/home/$( whoami )/virtualenv/wildme3.7
+export VENV=/home/$( whoami )/virtualenv/wildme3.10
 
 export LC_ALL=C.UTF-8
 
@@ -43,9 +43,9 @@ export OPENCV_VERSION=3.4.11
 #     ca-certificates \
 #     build-essential \
 #     pkg-config \
-#     python3.7 \
-#     python3.7-dev \
-#     python3.7-gdbm \
+#     python3.10 \
+#     python3.10-dev \
+#     python3.10-gdbm \
 #     python3-pip \
 #     libncurses5-dev \
 #     libncursesw5-dev \
@@ -69,7 +69,7 @@ export OPENCV_VERSION=3.4.11
 
 pip3 install --no-cache-dir virtualenv
 
-virtualenv -p $(which python3.7) ${VENV}
+virtualenv -p $(which python3) ${VENV}
 
 source ${VENV}/bin/activate
 
@@ -178,7 +178,7 @@ pip install --no-cache-dir -e .
 
 pip install --no-cache-dir pygraphviz --install-option="--include-path=/usr/include/graphviz" --install-option="--library-path=/usr/lib/graphviz/"
 
-cp -r ${VIRTUAL_ENV}/lib/python3.7/site-packages/cv2 /tmp/cv2
+cp -r ${VIRTUAL_ENV}/lib/python3.10/site-packages/cv2 /tmp/cv2
 
 cd ${CODE}
 git clone --branch develop https://github.com/WildMeOrg/wildbook-ia.git
@@ -270,8 +270,8 @@ pip install --no-cache-dir \
     tensorflow-gpu==1.15.4 \
     keras==2.2.5
 
-rm -rf ${VIRTUAL_ENV}/lib/python3.7/site-packages/cv2*
-cp -r /tmp/cv2 ${VIRTUAL_ENV}/lib/python3.7/site-packages/cv2
+rm -rf ${VIRTUAL_ENV}/lib/python3.10/site-packages/cv2*
+cp -r /tmp/cv2 ${VIRTUAL_ENV}/lib/python3.10/site-packages/cv2
 rm -rf /tmp/cv2
 
 # python -c "import wbia;            from wbia.__main__ import smoke_test; smoke_test()"

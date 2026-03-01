@@ -67,9 +67,6 @@ COPY --from=org.wildme.wbia.latest /virtualenv /virtualenv
 
 COPY --from=org.wildme.wbia.latest /wbia /wbia
 
-# theano configuration file
-COPY ./_config/theanorc /root/.theanorc
-
 # setup script for python development
 COPY ./_config/setup.sh /bin/setup
 
@@ -92,9 +89,9 @@ COPY ./_config/healthcheck.py /bin/healthcheck.py
 RUN updatedb
 
 # Temporary fix for ARM64
-#ENV LD_PRELOAD "${LD_PRELOAD}:/virtualenv/env3/lib/python3.7/site-packages/torch/lib/libgomp-d22c30c5.so.1"
+#ENV LD_PRELOAD "${LD_PRELOAD}:/virtualenv/env3/lib/python3.10/site-packages/torch/lib/libgomp-d22c30c5.so.1"
 
-#ENV LD_PRELOAD "${LD_PRELOAD}:/virtualenv/env3/lib/python3.7/site-packages/scikit_image.libs/libgomp-d22c30c5.so.1.0.0"
+#ENV LD_PRELOAD "${LD_PRELOAD}:/virtualenv/env3/lib/python3.10/site-packages/scikit_image.libs/libgomp-d22c30c5.so.1.0.0"
 
 # Fix PyQt5
 RUN set -ex \
@@ -145,10 +142,10 @@ RUN set -ex \
  && /virtualenv/env3/bin/python -c "import wbia_lca;         from wbia_lca._plugin         import *" \
  && /virtualenv/env3/bin/python -c "import wbia_lightglue;   from wbia_lightglue._plugin   import *" \
  && /virtualenv/env3/bin/python -c "import wbia_hybrid;      from wbia_hybrid._plugin      import *" \
- && find /wbia/wbia* -name '*.a' -print      | grep -v "cpython-37m-x86_64-linux-gnu" | grep -v "cpython-37m-aarch64-linux-gnu.so" | xargs -i /bin/bash -c 'echo {} && ld -d {}' \
- && find /wbia/wbia* -name '*.so' -print     | grep -v "cpython-37m-x86_64-linux-gnu" | grep -v "cpython-37m-aarch64-linux-gnu.so" | xargs -i /bin/bash -c 'echo {} && ld -d {}' \
- && find /wbia/wildbook* -name '*.a' -print  | grep -v "cpython-37m-x86_64-linux-gnu" | grep -v "cpython-37m-aarch64-linux-gnu.so" | xargs -i /bin/bash -c 'echo {} && ld -d {}' \
- && find /wbia/wildbook* -name '*.so' -print | grep -v "cpython-37m-x86_64-linux-gnu" | grep -v "cpython-37m-aarch64-linux-gnu.so" | xargs -i /bin/bash -c 'echo {} && ld -d {}'
+ && find /wbia/wbia* -name '*.a' -print      | grep -v "cpython-310-x86_64-linux-gnu" | grep -v "cpython-310-aarch64-linux-gnu.so" | xargs -i /bin/bash -c 'echo {} && ld -d {}' \
+ && find /wbia/wbia* -name '*.so' -print     | grep -v "cpython-310-x86_64-linux-gnu" | grep -v "cpython-310-aarch64-linux-gnu.so" | xargs -i /bin/bash -c 'echo {} && ld -d {}' \
+ && find /wbia/wildbook* -name '*.a' -print  | grep -v "cpython-310-x86_64-linux-gnu" | grep -v "cpython-310-aarch64-linux-gnu.so" | xargs -i /bin/bash -c 'echo {} && ld -d {}' \
+ && find /wbia/wildbook* -name '*.so' -print | grep -v "cpython-310-x86_64-linux-gnu" | grep -v "cpython-310-aarch64-linux-gnu.so" | xargs -i /bin/bash -c 'echo {} && ld -d {}'
 
 
 # Undo Fix

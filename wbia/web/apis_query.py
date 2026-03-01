@@ -821,8 +821,6 @@ def query_chips_test(ibs, aid=None, limited=False, census_annotations=True, **kw
 @register_ibs_method
 @register_api('/api/query/graph/complete/', methods=['GET', 'POST'])
 def query_chips_graph_complete(ibs, aid_list, query_config_dict={}, k=5, **kwargs):
-    import theano  # NOQA
-
     cm_list, qreq_ = ibs.query_chips(
         qaid_list=aid_list,
         daid_list=aid_list,
@@ -915,8 +913,6 @@ def query_chips_graph(
     **kwargs,
 ):
     import uuid
-
-    import theano  # NOQA
 
     from wbia.unstable.orig_graph_iden import OrigAnnotInference
 

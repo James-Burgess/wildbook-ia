@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 import datetime
-import distutils
 import logging
 import setuptools
+
+from packaging.version import Version
 from os.path import exists, join, realpath, split, splitext
 
 import utool as ut
@@ -38,8 +39,8 @@ def compare_string_versions(a, b):
         >>> print(result)
         1, -1, 0
     """
-    va = distutils.version.LooseVersion(a)
-    vb = distutils.version.LooseVersion(b)
+    va = Version(a)
+    vb = Version(b)
     if va > vb:
         return 1
     elif va < vb:

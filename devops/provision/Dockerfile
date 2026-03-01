@@ -64,6 +64,17 @@ RUN set -ex \
  && git fetch origin \
  && git checkout main
 
+# Upgrade pip, setuptools and wheel before installing any packages
+# Upgrade pip/setuptools/wheel.  Pin setuptools<75 because 75+ drops pkg_resources
+# from build-isolation overlays, breaking legacy packages (brambox, visdom, etc.).
+RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
+ && pip install --upgrade "pip>=23,<26" "setuptools>=69,<75" wheel'
+
+# Constrain setuptools in ALL pip build-isolation environments so that
+# transitive dependencies also get a setuptools with working pkg_resources.
+RUN echo "setuptools<75" > /tmp/pip-constraints.txt
+ENV PIP_CONSTRAINT=/tmp/pip-constraints.txt
+
 # WBIA Toolkits
 RUN set -ex \
  && /bin/bash -xc '. /virtualenv/env3/bin/activate \
@@ -94,12 +105,12 @@ RUN set -ex \
 
 RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
  && cd /wbia/wbia-deprecate-tpl-brambox \
- && pip install --no-cache-dir -e .'
+ && pip install --no-build-isolation --no-cache-dir -e .'
 
 RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
  && cd /wbia/wbia-deprecate-tpl-lightnet \
- && /virtualenv/env3/bin/pip install --no-cache-dir -r develop.txt \
- && pip install --no-cache-dir -e .'
+ && /virtualenv/env3/bin/pip install --no-build-isolation --no-cache-dir -r develop.txt \
+ && pip install --no-build-isolation --no-cache-dir -e .'
 
 
 # Install Rust non-interactively (required for timm library used in WBIA)
@@ -108,9 +119,13 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Wildbook IA
+# Note: run_developer_setup.sh uses editable install (pip install -e .) which
+# requires PEP 660 support that scikit-build lacks.  For Docker we install
+# requirements then do a regular (non-editable) install instead.
 RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
  && cd /wbia/wildbook-ia \
- && /bin/bash run_developer_setup.sh \
+ && pip install --no-cache-dir -r requirements.txt \
+ && pip install --no-cache-dir . \
  && pip install --no-cache-dir -r requirements/postgres.txt'
 
 # WBIA third-party plug-ins
@@ -178,14 +193,11 @@ RUN set -ex \
      pynvml \
  && /virtualenv/env3/bin/pip install --no-cache-dir --upgrade \
      opencv-contrib-python-headless \
- && /virtualenv/env3/bin/pip install --no-cache-dir --upgrade --pre \
-     torch==1.12.1 \
-     torchvision \
-     torchaudio \
-     --extra-index-url https://download.pytorch.org/whl/nightly/cu113 \
  && /virtualenv/env3/bin/pip install --no-cache-dir \
-     MarkupSafe==2.0.1 \
-     Flask==2.1.0
+     torch==2.0.1 \
+     torchvision==0.15.2 \
+     torchaudio==2.0.2 \
+     --extra-index-url https://download.pytorch.org/whl/cu117
 
 # Wildbook IA problematic dependencies
 RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
