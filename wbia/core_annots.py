@@ -2198,7 +2198,7 @@ class OrienterConfig(dtool.Config):
         ut.ParamInfo(
             'orienter_algo',
             'plugin:orientation',
-            valid_values=['deepsense', 'plugin:orientation'],
+            valid_values=['plugin:orientation'],
         ),
         ut.ParamInfo('orienter_weight_filepath', None),
     ]
@@ -2287,42 +2287,7 @@ def compute_orients_annotations(depc, aid_list, config=None):
     ibs = depc.controller
     depc = ibs.depc_annot
 
-    if config['orienter_algo'] in ['deepsense']:
-        logger.info('[ibs] orienting using Deepsense Orienter')
-        try:
-            bbox_list = ibs.get_annot_bboxes(aid_list)
-            annot_uuid_list = ibs.get_annot_uuids(aid_list)
-
-            result_gen = []
-            for bbox, annot_uuid in zip(bbox_list, annot_uuid_list):
-                xtl, ytl, w, h = bbox
-
-                cx = xtl + w // 2
-                cy = ytl + h // 2
-                diameter = max(w, h)
-                radius = diameter // 2
-
-                xtl = cx - radius
-                ytl = cy - radius
-                w = diameter
-                h = diameter
-
-                response = ibs.wbia_plugin_deepsense_keypoint(annot_uuid)
-                angle = response['keypoints']['angle']
-                angle -= 90
-                theta = ut.deg_to_rad(angle)
-
-                result = (
-                    xtl,
-                    ytl,
-                    w,
-                    h,
-                    theta,
-                )
-                result_gen.append(result)
-        except Exception:
-            raise RuntimeError('Deepsense orienter not working!')
-    elif config['orienter_algo'] in ['plugin:orientation']:
+    if config['orienter_algo'] in ['plugin:orientation']:
         logger.info('[ibs] orienting using Orientation Plug-in')
         try:
             import vtool as vt

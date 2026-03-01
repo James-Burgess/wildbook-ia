@@ -53,11 +53,6 @@ fi
 chown ${HOST_USER}:${HOST_USER} ${HOME_FOLDER}/.theanorc
 # Hotfixes!
 
-# PermissionError: [Errno 13] Permission denied: '/wbia/wbia-plugin-pie/wbia_pie/examples/manta-demo/db_localised'
-if [ -d "/wbia/wbia-plugin-pie" ]; then
-    chown -R ${HOST_USER}:${HOST_USER} /wbia/wbia-plugin-pie
-fi
-
 # Web error wbia.control.controller_inject.WebMatchThumbException, old symlinks expecting /data/docker to exist
 if [ ! -d "/data/docker" ]; then
     ln -s -T /data/db /data/docker

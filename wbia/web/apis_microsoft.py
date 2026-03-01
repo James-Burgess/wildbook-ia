@@ -1064,7 +1064,7 @@ def microsoft_identify(
         $ref: "#/definitions/Annotation"
     - name: algorithm
       in: formData
-      description: The algorithm you with to run ID with.  Must be one of "HotSpotter", "CurvRank", "CurvRankTwo", "Finfindr", or "Deepsense"
+      description: The algorithm you wish to run ID with.  Must be "HotSpotter"
       required: true
       type: string
     - name: callback_url
@@ -1107,14 +1107,7 @@ def microsoft_identify(
         algorithm = algorithm.lower()
         assert algorithm in [
             'hotspotter',
-            'curvrank',
-            'curvrank_v2',
-            'curvrankv2',
-            'deepsense',
-            'finfindr',
-            'kaggle7',
-            'kaggleseven',
-        ], 'Must specify the algorithm for ID as HotSpotter, CurvRank, CurvRankTwo, Deepsense, Finfindr, Kaggle7'
+        ], 'Must specify the algorithm for ID as HotSpotter'
 
         parameter = 'callback_url'
         assert callback_url is None or isinstance(
@@ -1142,26 +1135,6 @@ def microsoft_identify(
 
     if algorithm in ['hotspotter']:
         query_config_dict = {}
-    elif algorithm in ['curvrank']:
-        query_config_dict = {
-            'pipeline_root': 'CurvRankFluke',
-        }
-    elif algorithm in ['curvrank_v2', 'curvrankv2']:
-        query_config_dict = {
-            'pipeline_root': 'CurvRankTwoFluke',
-        }
-    elif algorithm in ['deepsense']:
-        query_config_dict = {
-            'pipeline_root': 'Deepsense',
-        }
-    elif algorithm in ['finfindr']:
-        query_config_dict = {
-            'pipeline_root': 'Finfindr',
-        }
-    elif algorithm in ['kaggle7', 'kaggleseven']:
-        query_config_dict = {
-            'pipeline_root': 'KaggleSeven',
-        }
 
     user_feedback = {
         'aid1': [],

@@ -38,21 +38,10 @@ def get_query_annot_pair_info(
         not tblhack
         or tblhack.lower()
         in [
-            'bc_dtw',
-            'oc_wdtw',
-            'curvrankdorsal',
-            'curvrankfinfindrhybriddorsal',
-            'curvrankfluke',
-            'curvranktwodorsal',
-            'curvranktwofluke',
-            'deepsense',
-            'finfindr',
-            'kaggle7',
-            'kaggleseven',
-            'pie',
             'pietwo',
             'miewid',
-            'whaleridgefindr'
+            'lightglue',
+            'hybrid',
         ]
     ) and getattr(qreq_, '_isnewreq', None):
         if (
@@ -88,21 +77,10 @@ def get_data_annot_pair_info(
         not tblhack
         or tblhack.lower()
         in [
-            'bc_dtw',
-            'oc_wdtw',
-            'curvrankdorsal',
-            'curvrankfinfindrhybriddorsal',
-            'curvrankfluke',
-            'curvranktwodorsal',
-            'curvranktwofluke',
-            'deepsense',
-            'finfindr',
-            'kaggle7',
-            'kaggleseven',
-            'pie',
             'pietwo',
             'miewid',
-            'whaleridgefindr'
+            'lightglue',
+            'hybrid',
         ]
     ) and getattr(qreq_, '_isnewreq', None):
         if (

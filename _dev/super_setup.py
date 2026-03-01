@@ -28,16 +28,9 @@ REPOS = [
     ('WildMeOrg/wbia-deprecate-tpl-brambox', 'wbia-deprecate-tpl-brambox', 'develop'),
     ('WildMeOrg/wbia-deprecate-tpl-lightnet', 'wbia-deprecate-tpl-lightnet', 'develop'),
     ('WildMeOrg/wbia-plugin-cnn', 'wbia-plugin-cnn', 'develop'),
-    ('WildMeOrg/wbia-plugin-flukematch', 'wbia-plugin-flukematch', 'develop'),
-    ('WildMeOrg/wbia-plugin-curvrank', 'wbia-plugin-curvrank', 'develop'),
-    ('WildMeOrg/wbia-plugin-deepsense', 'wbia-plugin-deepsense', 'develop'),
-    ('WildMeOrg/wbia-plugin-finfindr', 'wbia-plugin-finfindr', 'develop'),
-    ('WildMeOrg/wbia-plugin-kaggle7', 'wbia-plugin-kaggle7', 'develop'),
-    ('WildMeOrg/wbia-plugin-pie', 'wbia-plugin-pie', 'develop'),
     ('WildMeOrg/wbia-plugin-pie-v2', 'wbia-plugin-pie-v2', 'develop'),
     ('WildMeOrg/wbia-plugin-lca', 'wbia-plugin-lca', 'develop'),
     ('WildMeOrg/wbia-plugin-miew-id', 'wbia-plugin-miew-id', 'develop'),
-    ('WildMeOrg/wbia-plugin-whaleridgefindr', 'wbia-plugin-whaleridgefindr', 'develop'),
     # ('WildMeOrg/wbia-plugin-2d-orientation', 'wbia-plugin-2d-orientation', 'develop'),
 ]
 

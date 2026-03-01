@@ -2334,45 +2334,9 @@ def set_annot_viewpoints(
         aid_list = ut.compress(aid_list, isvalid)
         viewpoint_list = ut.compress(viewpoint_list, isvalid)
 
-    if purge_cache:
-        current_viewpoint_list = ibs.get_annot_viewpoints(aid_list)
-
     val_iter = zip(viewpoint_list)
     id_iter = zip(aid_list)
     ibs.db.set(const.ANNOTATION_TABLE, (ANNOT_VIEWPOINT,), val_iter, id_iter)
-
-    if purge_cache:
-        flag_list = [
-            viewpoint != current_viewpoint
-            for viewpoint, current_viewpoint in zip(
-                viewpoint_list, current_viewpoint_list
-            )
-        ]
-        update_aid_list = ut.compress(aid_list, flag_list)
-        try:
-            ibs.wbia_plugin_curvrank_delete_cache_optimized(
-                update_aid_list, 'CurvRankDorsal'
-            )
-        except Exception:
-            message = 'Could not purge CurvRankDorsal cache for viewpoint'
-            # raise RuntimeError(message)
-            logger.info(message)
-        try:
-            ibs.wbia_plugin_curvrank_v2_delete_cache_optimized(
-                update_aid_list, 'CurvRankTwoDorsal'
-            )
-        except Exception:
-            message = 'Could not purge CurvRankTwoDorsal cache for viewpoint'
-            # raise RuntimeError(message)
-            logger.info(message)
-        try:
-            ibs.wbia_plugin_curvrank_delete_cache_optimized(
-                update_aid_list, 'CurvRankFinfindrHybridDorsal'
-            )
-        except Exception:
-            message = 'Could not purge CurvRankFinfindrHybridDorsal cache for viewpoint'
-            # raise RuntimeError(message)
-            logger.info(message)
 
     # oops didn't realize there was a structure already here for this
     if _code_update:
