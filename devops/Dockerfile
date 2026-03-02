@@ -125,7 +125,9 @@ RUN set -ex \
  && /virtualenv/env3/bin/pip install --no-cache-dir --upgrade \
      opencv-contrib-python-headless \
  && /virtualenv/env3/bin/pip uninstall -y \
-     nvidia_cublas_cu11
+     nvidia_cublas_cu11 \
+ && /virtualenv/env3/bin/pip install --no-cache-dir --force-reinstall \
+     "numpy>=1.22.0,<1.24"
 
 # Run smoke tests
 RUN set -ex \

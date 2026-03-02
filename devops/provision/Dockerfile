@@ -187,4 +187,4 @@ RUN set -ex \
  && /virtualenv/env3/bin/pip uninstall -y \
      wildbook-ia \
  && cd /wbia/wildbook-ia \
- && /virtualenv/env3/bin/pip install --no-cache-dir -e .
+ && /virtualenv/env3/bin/pip install --no-cache-dir .
