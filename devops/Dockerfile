@@ -157,6 +157,6 @@ CMD []
 ##########################################################################################
 FROM org.wildme.wbia.install as org.wildme.wbia.depricated
 
-COPY ./_config/deprecated.sh /bin/deprecated
-
-RUN if [ "$(uname -m)" != "aarch64" ] ; then deprecated ; fi
+# PIE v1 + TensorFlow 1.15 are incompatible with Python 3.10; skipped.
+# COPY ./_config/deprecated.sh /bin/deprecated
+# RUN if [ "$(uname -m)" != "aarch64" ] ; then deprecated ; fi
