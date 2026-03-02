@@ -39,13 +39,6 @@ RUN set -ex \
  && git clone https://github.com/WildMeOrg/wbia-plugin-pie-v2.git \
  && git clone --recurse-submodules https://github.com/WildMeOrg/wbia-plugin-miew-id.git
 
-RUN set -ex \
- && cd /wbia \
- && git clone --recursive https://github.com/WildMeOrg/wbia-plugin-blend.git \
- && cd /wbia/wbia-plugin-blend/wbia_blend \
- && git fetch origin \
- && git checkout main
-
 # Clone LightGlue and Hybrid plug-in repositories
 RUN set -ex \
  && cd /wbia \
@@ -55,14 +48,7 @@ RUN set -ex \
  && git fetch origin \
  && git checkout main
 
-# Deprecated plugins removed: kaggle7, deepsense, whaleridgefindr, finfindr, curvrank, pie (v1)
-
-RUN set -ex \
- && cd /wbia \
- && git clone --recursive https://github.com/WildMeOrg/wbia-plugin-lca.git \
- && cd /wbia/wbia-plugin-lca/wbia_lca \
- && git fetch origin \
- && git checkout main
+# Deprecated/removed plugins: kaggle7, deepsense, whaleridgefindr, finfindr, curvrank, pie (v1), blend, lca
 
 # Upgrade pip, setuptools and wheel before installing any packages
 # Upgrade pip/setuptools/wheel.  Pin setuptools<75 because 75+ drops pkg_resources
@@ -137,27 +123,19 @@ RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
  && cd /wbia/wbia-plugin-pie-v2 \
  && /bin/bash run_developer_setup.sh'
 
-RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
- && cd /wbia/wbia-plugin-blend \
- && pip install --no-cache-dir -e .'
-
-# Deprecated plugin installs removed (finfindr, whaleridgefindr, deepsense, kaggle7)
-
-RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
- && cd /wbia/wbia-plugin-lca \
- && pip install --no-cache-dir -e .'
+# Deprecated/removed plugin installs: finfindr, whaleridgefindr, deepsense, kaggle7, blend, lca
 
 RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
  && cd /wbia/wbia-plugin-orientation \
- && pip install --no-cache-dir -e .'
+ && pip install --no-cache-dir .'
 
 RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
  && cd /wbia/wbia-plugin-lightglue \
- && pip install --no-cache-dir -e .'
+ && pip install --no-cache-dir .'
 
 RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
  && cd /wbia/wbia-plugin-hybrid \
- && pip install --no-cache-dir -e .'
+ && pip install --no-cache-dir .'
 
 # Ensure no previous or deprecated repositories are installed
 # Ensure that opencv-python is un-installed since we want to use our built version

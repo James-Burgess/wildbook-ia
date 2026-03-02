@@ -13,9 +13,6 @@ RUN set -ex \
  && find /wbia/wbia* -name '.git' -type d -print0 | xargs -0 -i /bin/bash -c \
     'cd {} && cd .. && echo $(pwd) && git reset --hard origin/main && git pull || echo "SKIP (no remote): $(pwd)"' \
 
- && cd /wbia/wbia-plugin-lca/wbia_lca \
- && git reset --hard origin/main \
- && git pull \
  && cd /wbia/wbia-plugin-hybrid/wbia_hybrid \
  && git reset --hard origin/main \
  && git pull \
@@ -137,9 +134,7 @@ RUN set -ex \
  && /virtualenv/env3/bin/python -c "import wbia;             from wbia.__main__ import smoke_test; smoke_test()" \
  && /virtualenv/env3/bin/python -c "import wbia_cnn;         from wbia_cnn.__main__ import main;         main()" \
  && /virtualenv/env3/bin/python -c "import wbia_pie_v2;      from wbia_pie_v2.__main__ import main;      main()" \
- && /virtualenv/env3/bin/python -c "import wbia_blend;       from wbia_blend._plugin import *" \
  && /virtualenv/env3/bin/python -c "import wbia_orientation; from wbia_orientation.__main__ import main; main()" \
- && /virtualenv/env3/bin/python -c "import wbia_lca;         from wbia_lca._plugin         import *" \
  && /virtualenv/env3/bin/python -c "import wbia_lightglue;   from wbia_lightglue._plugin   import *" \
  && /virtualenv/env3/bin/python -c "import wbia_hybrid;      from wbia_hybrid._plugin      import *" \
  && find /wbia/wbia* -name '*.a' -print      | grep -v "cpython-310-x86_64-linux-gnu" | grep -v "cpython-310-aarch64-linux-gnu.so" | xargs -i /bin/bash -c 'echo {} && ld -d {}' \
