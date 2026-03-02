@@ -31,10 +31,6 @@ RUN set -ex \
 # Clone first-party WBIA plug-in repositories
 RUN set -ex \
  && cd /wbia \
- && git clone --recursive https://github.com/WildMeOrg/wbia-plugin-cnn.git
-
-RUN set -ex \
- && cd /wbia \
  && git clone https://github.com/WildMeOrg/wbia-plugin-orientation.git \
  && git clone https://github.com/WildMeOrg/wbia-plugin-pie-v2.git \
  && git clone --recurse-submodules https://github.com/WildMeOrg/wbia-plugin-miew-id.git
@@ -115,10 +111,7 @@ RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
  && pip install --no-cache-dir -r requirements/postgres.txt'
 
 # WBIA third-party plug-ins
-RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
- && cd /wbia/wbia-plugin-cnn \
- && /bin/bash run_developer_setup.sh'
-
+# CNN plugin removed (depends on theano/lasagne, incompatible with Python 3.10+)
 RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
  && cd /wbia/wbia-plugin-pie-v2 \
  && /bin/bash run_developer_setup.sh'

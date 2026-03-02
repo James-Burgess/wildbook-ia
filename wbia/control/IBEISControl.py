@@ -189,7 +189,7 @@ for modname in ut.ProgIter(
             ub.import_module_from_path('/wbia/wbia-plugin-hybrid/wbia_hybrid/__init__.py')
         else:
             ub.import_module_from_name(modname)
-    except ImportError:
+    except Exception:
         if 'wbia_cnn' in modname:
             import warnings
 
