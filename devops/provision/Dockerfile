@@ -35,9 +35,10 @@ RUN set -ex \
  && git clone https://github.com/WildMeOrg/wbia-plugin-pie-v2.git \
  && git clone --recurse-submodules https://github.com/WildMeOrg/wbia-plugin-miew-id.git
 
-# Clone LightGlue and Hybrid plug-in repositories
+# Clone upstream LightGlue, then LightGlue and Hybrid plug-in repositories
 RUN set -ex \
  && cd /wbia \
+ && git clone https://github.com/cvg/LightGlue.git \
  && git clone https://github.com/WildMeOrg/wbia-plugin-lightglue.git \
  && git clone --recursive https://github.com/WildMeOrg/wbia-plugin-hybrid.git \
  && cd /wbia/wbia-plugin-hybrid/wbia_hybrid \
@@ -123,6 +124,8 @@ RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
  && pip install --no-cache-dir .'
 
 RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
+ && cd /wbia/LightGlue \
+ && pip install --no-cache-dir . \
  && cd /wbia/wbia-plugin-lightglue \
  && pip install --no-cache-dir .'
 
