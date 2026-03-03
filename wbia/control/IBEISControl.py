@@ -181,14 +181,7 @@ for modname in ut.ProgIter(
     try:
         # ut.import_modname(modname)
         # NOTE hack
-        if modname == 'wbia_miew_id._plugin':
-            ub.import_module_from_path('/wbia/wbia-plugin-miew-id/wbia_miew_id/__init__.py')
-        elif modname == 'wbia_lightglue._plugin':
-            ub.import_module_from_path('/wbia/wbia-plugin-lightglue/wbia_lightglue/__init__.py')
-        elif modname == 'wbia_hybrid._plugin':
-            ub.import_module_from_path('/wbia/wbia-plugin-hybrid/wbia_hybrid/__init__.py')
-        else:
-            ub.import_module_from_name(modname)
+        ub.import_module_from_name(modname)
     except Exception:
         if 'wbia_cnn' in modname:
             import warnings
