@@ -135,6 +135,7 @@ RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
 
 RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
  && cd /wbia/wbia-plugin-miew-id \
+ && pip install --no-cache-dir timm grad-cam optuna zennit python-dotenv albumentations \
  && pip install --no-cache-dir .'
 
 # Ensure no previous or deprecated repositories are installed
