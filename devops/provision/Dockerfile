@@ -133,6 +133,10 @@ RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
  && cd /wbia/wbia-plugin-hybrid \
  && pip install --no-cache-dir .'
 
+RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
+ && cd /wbia/wbia-plugin-miew-id \
+ && pip install --no-cache-dir .'
+
 # Ensure no previous or deprecated repositories are installed
 # Ensure that opencv-python is un-installed since we want to use our built version
 RUN set -ex \
