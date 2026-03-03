@@ -133,6 +133,12 @@ RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
  && cd /wbia/wbia-plugin-hybrid \
  && pip install --no-cache-dir .'
 
+# pairx submodule lacks __init__.py files needed by find_packages()
+RUN find /wbia/wbia-plugin-miew-id/wbia_miew_id -type d \
+    ! -path '*__pycache__*' ! -path '*.git*' \
+    ! -exec test -f '{}/__init__.py' \; \
+    -exec sh -c 'echo "# -*- coding: utf-8 -*-" > "{}/__init__.py"' \;
+
 RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
  && cd /wbia/wbia-plugin-miew-id \
  && pip install --no-cache-dir timm grad-cam optuna zennit python-dotenv albumentations \
