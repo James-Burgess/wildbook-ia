@@ -18,6 +18,24 @@ import utool as ut
 from flask import current_app, request, url_for  # NOQA
 
 from wbia import constants as const
+
+# Deprecated pipeline roots - these plugins have been removed from the build.
+# Requests using these will return an error instead of silently failing.
+DEPRECATED_PIPELINE_ROOTS = frozenset({
+    'bc_dtw',
+    'oc_wdtw',
+    'curvrankdorsal',
+    'curvrankfinfindrhybriddorsal',
+    'curvrankfluke',
+    'curvranktwodorsal',
+    'curvranktwofluke',
+    'deepsense',
+    'finfindr',
+    'kaggle7',
+    'kaggleseven',
+    'pie',
+    'whaleridgefindr',
+})
 from wbia.algo.hots import pipeline
 from wbia.control import controller_inject
 from wbia.web import appfuncs as appf
@@ -443,24 +461,20 @@ def review_graph_match_html(
 
     proot = query_config_dict.get('pipeline_root', 'vsmany')
     proot = query_config_dict.get('proot', proot)
+    if proot.lower() in DEPRECATED_PIPELINE_ROOTS:
+        raise controller_inject.WebInvalidInput(
+            'Algorithm %r has been deprecated and removed. '
+            'Please use an active algorithm (e.g. HotSpotter, PieTwo, MiewId, LightGlue).' % (proot,),
+            'query_config_dict["pipeline_root"]',
+            proot,
+        )
     if proot.lower() in (
-        'bc_dtw',
-        'oc_wdtw',
-        'curvrankdorsal',
-        'curvrankfinfindrhybriddorsal',
-        'curvrankfluke',
-        'curvranktwodorsal',
-        'curvranktwofluke',
-        'deepsense',
-        'finfindr',
-        'kaggle7',
-        'kaggleseven',
-        'pie',
         'pietwo',
         'miewid',
-        'whaleridgefindr'
+        'lightglue',
+        'hybrid',
     ):
-        cls = chip_match.AnnotMatch  # ibs.depc_annot.requestclass_dict['BC_DTW']
+        cls = chip_match.AnnotMatch
     else:
         cls = chip_match.ChipMatch
 
@@ -567,36 +581,14 @@ def review_graph_match_html(
 def review_query_chips_test(**kwargs):
     ibs = current_app.ibs
 
-    # the old block curvature dtw
-    if 'use_bc_dtw' in request.args:
-        query_config_dict = {'pipeline_root': 'BC_DTW'}
-    # the new oriented curvature dtw
-    elif 'use_oc_wdtw' in request.args:
-        query_config_dict = {'pipeline_root': 'OC_WDTW'}
-    elif 'use_curvrank_dorsal' in request.args:
-        query_config_dict = {'pipeline_root': 'CurvRankDorsal'}
-    elif 'use_curvrank_finfindr_hybrid_dorsal' in request.args:
-        query_config_dict = {'pipeline_root': 'CurvRankFinfindrHybridDorsal'}
-    elif 'use_curvrank_fluke' in request.args:
-        query_config_dict = {'pipeline_root': 'CurvRankFluke'}
-    elif 'use_curvrank_v2_dorsal' in request.args:
-        query_config_dict = {'pipeline_root': 'CurvRankTwoDorsal'}
-    elif 'use_curvrank_v2_fluke' in request.args:
-        query_config_dict = {'pipeline_root': 'CurvRankTwoFluke'}
-    elif 'use_deepsense' in request.args:
-        query_config_dict = {'pipeline_root': 'Deepsense'}
-    elif 'use_finfindr' in request.args:
-        query_config_dict = {'pipeline_root': 'Finfindr'}
-    elif 'use_kaggle7' in request.args or 'use_kaggleseven' in request.args:
-        query_config_dict = {'pipeline_root': 'KaggleSeven'}
-    elif 'use_pie' in request.args:
-        query_config_dict = {'pipeline_root': 'Pie'}
-    elif 'use_pie_v2' in request.args:
+    if 'use_pie_v2' in request.args:
         query_config_dict = {'pipeline_root': 'PieTwo'}
     elif 'use_miew_id' in request.args:
         query_config_dict = {'pipeline_root': 'MiewId'}
-    elif 'use_whaleridgefindr' in request.args:
-        query_config_dict = {'pipeline_root': 'whaleridgefindr'}
+    elif 'use_lightglue' in request.args:
+        query_config_dict = {'pipeline_root': 'LightGlue'}
+    elif 'use_hybrid' in request.args:
+        query_config_dict = {'pipeline_root': 'Hybrid'}
     else:
         query_config_dict = {}
     result_dict = ibs.query_chips_test(query_config_dict=query_config_dict)
@@ -829,8 +821,6 @@ def query_chips_test(ibs, aid=None, limited=False, census_annotations=True, **kw
 @register_ibs_method
 @register_api('/api/query/graph/complete/', methods=['GET', 'POST'])
 def query_chips_graph_complete(ibs, aid_list, query_config_dict={}, k=5, **kwargs):
-    import theano  # NOQA
-
     cm_list, qreq_ = ibs.query_chips(
         qaid_list=aid_list,
         daid_list=aid_list,
@@ -924,8 +914,6 @@ def query_chips_graph(
 ):
     import uuid
 
-    import theano  # NOQA
-
     from wbia.unstable.orig_graph_iden import OrigAnnotInference
 
     def convert_to_uuid(nid):
@@ -941,15 +929,8 @@ def query_chips_graph(
     use_gradcam = query_config_dict.get('use_gradcam', False)
     logger.info('query_config_dict = {!r}'.format(query_config_dict))
 
-    curvrank_daily_tag = query_config_dict.get('curvrank_daily_tag', None)
-    if curvrank_daily_tag is not None:
-        if len(curvrank_daily_tag) > 144:
-            curvrank_daily_tag_ = ut.hashstr27(curvrank_daily_tag)
-            curvrank_daily_tag_ = 'wbia-shortened-{}'.format(curvrank_daily_tag_)
-            logger.info('[WARNING] curvrank_daily_tag too long (Probably an old job)')
-            logger.info('[WARNING] Original: {!r}'.format(curvrank_daily_tag))
-            logger.info('[WARNING] Shortened: {!r}'.format(curvrank_daily_tag_))
-            query_config_dict['curvrank_daily_tag'] = curvrank_daily_tag_
+    # Remove deprecated curvrank config keys silently for backward compatibility
+    query_config_dict.pop('curvrank_daily_tag', None)
 
     num_qaids = len(qaid_list)
     num_daids = len(daid_list)
@@ -1266,7 +1247,7 @@ def query_chips_graph(
     if return_summary:
         summary_list = [
             ('summary_annot', cm.annot_score_list),
-            ('summary_name', cm.name_score_list),
+            ('summary_name', cm.score_list),
         ]
         for summary_key, summary_score_list in summary_list:
             value_list = sorted(list(zip(summary_score_list, cm.daid_list)), reverse=True)

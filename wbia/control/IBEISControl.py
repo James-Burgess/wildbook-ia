@@ -110,55 +110,14 @@ AUTOLOAD_PLUGIN_MODNAMES = [
 ]
 
 
-if ut.get_argflag('--flukematch'):
-    AUTOLOAD_PLUGIN_MODNAMES += [
-        (('--no-flukematch', '--noflukematch'), 'wbia_flukematch.plugin'),
-    ]
-
-# if ut.get_argflag('--curvrank'):
-#     AUTOLOAD_PLUGIN_MODNAMES += [
-#         (('--no-curvrank', '--nocurvrank'), 'wbia_curvrank._plugin'),
-#     ]
-
-if ut.get_argflag('--curvrank-v2'):
-    AUTOLOAD_PLUGIN_MODNAMES += [
-        (('--no-curvrank-v2', '--nocurvrankv2'), 'wbia_curvrank_v2._plugin'),
-    ]
-
-if ut.get_argflag('--deepsense'):
-    AUTOLOAD_PLUGIN_MODNAMES += [
-        (('--no-deepsense', '--nodeepsense'), 'wbia_deepsense._plugin'),
-    ]
-
-if ut.get_argflag('--finfindr'):
-    AUTOLOAD_PLUGIN_MODNAMES += [
-        (('--no-finfindr', '--nofinfindr'), 'wbia_finfindr._plugin'),
-    ]
-
-if ut.get_argflag('--kaggle7') or ut.get_argflag('--kaggleseven'):
-    AUTOLOAD_PLUGIN_MODNAMES += [
-        (
-            ('--no-kaggle7', '--nokaggle7', '--no-kaggleseven', '--nokaggleseven'),
-            'wbia_kaggle7._plugin',
-        ),
-    ]
-
-# if ut.get_argflag('--orient2d'):
-#     AUTOLOAD_PLUGIN_MODNAMES += [
-#         (('--no-2d-orient', '--no2dorient'), 'wbia_2d_orientation._plugin'),
-#     ]
-
+# Deprecated plugins - flags are silently ignored for backward compatibility:
+# --flukematch, --curvrank, --curvrank-v2, --deepsense, --finfindr,
+# --kaggle7, --kaggleseven, --pie, --whaleridgefindr
 
 if ut.get_argflag('--orient'):
     AUTOLOAD_PLUGIN_MODNAMES += [
         (('--no-orient', '--noorient'), 'wbia_orientation._plugin'),
     ]
-
-if ut.get_argflag('--pie'):
-    AUTOLOAD_PLUGIN_MODNAMES += [
-        (('--no-pie', '--nopie'), 'wbia_pie._plugin'),
-    ]
-
 
 if ut.get_argflag('--pie-v2'):
     AUTOLOAD_PLUGIN_MODNAMES += [
@@ -170,9 +129,14 @@ if ut.get_argflag('--miew-id'):
         (('--no-miew-id', '--nomiew-id'), 'wbia_miew_id._plugin'),
     ]
 
-if ut.get_argflag('--whaleridgefindr'):
+if ut.get_argflag('--lightglue'):
     AUTOLOAD_PLUGIN_MODNAMES += [
-        (('--no-whaleridgefindr', '--nowhaleridgefindr'), 'wbia_whaleridgefindr._plugin'),
+        (('--no-lightglue', '--nolightglue'), 'wbia_lightglue._plugin'),
+    ]
+
+if ut.get_argflag('--hybrid'):
+    AUTOLOAD_PLUGIN_MODNAMES += [
+        (('--no-hybrid', '--nohybrid'), 'wbia_hybrid._plugin'),
     ]
 
 if ut.get_argflag('--blend'):
@@ -217,13 +181,8 @@ for modname in ut.ProgIter(
     try:
         # ut.import_modname(modname)
         # NOTE hack
-        if modname == 'wbia_miew_id._plugin':
-            ub.import_module_from_path('/wbia/wbia-plugin-miew-id/wbia_miew_id/__init__.py')
-        if modname == 'wbia_whaleridgefindr._plugin':
-            ub.import_module_from_path('/wbia/wbia-plugin-whaleridgefindr/wbia_whaleridgefindr/__init__.py')
-        else:
-            ub.import_module_from_name(modname)
-    except ImportError:
+        ub.import_module_from_name(modname)
+    except Exception:
         if 'wbia_cnn' in modname:
             import warnings
 

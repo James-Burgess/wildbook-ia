@@ -27,7 +27,6 @@ RUN set -ex \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         software-properties-common \
         apt-utils \
- && add-apt-repository ppa:deadsnakes/ppa \
  && apt-get upgrade -y \
  # && apt-get dist-upgrade -y \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -36,11 +35,10 @@ RUN set -ex \
         build-essential \
         lsb-release \
         pkg-config \
-        # Install Python 3.7
-        python3.7 \
-        python3.7-dev \
-        python3.7-gdbm \
-        python3.7-distutils \
+        # Install Python 3.10 (system default on Ubuntu 22.04)
+        python3 \
+        python3-dev \
+        python3-gdbm \
         python3-pip \
         python3-setuptools \
         python3-venv \
@@ -117,7 +115,7 @@ RUN set -ex \
 
 # Create virtualenvs for Python3
 RUN set -ex \
- && virtualenv --system-site-packages -p $(which python3.7) \
+ && virtualenv --system-site-packages -p $(which python3) \
     --pip=22.3.1 \
     --setuptools=59.5.0 \
     --wheel=0.38.4 \

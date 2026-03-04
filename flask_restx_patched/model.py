@@ -2,7 +2,7 @@
 import flask_marshmallow
 from apispec.ext.marshmallow.swagger import field2property, fields2jsonschema
 from flask_restx.model import Model as OriginalModel
-from werkzeug import cached_property
+from werkzeug.utils import cached_property
 
 
 class SchemaMixin(object):

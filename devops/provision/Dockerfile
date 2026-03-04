@@ -31,46 +31,41 @@ RUN set -ex \
 # Clone first-party WBIA plug-in repositories
 RUN set -ex \
  && cd /wbia \
- && git clone --recursive https://github.com/WildMeOrg/wbia-plugin-cnn.git
-
-RUN set -ex \
- && cd /wbia \
  && git clone https://github.com/WildMeOrg/wbia-plugin-orientation.git \
- && git clone https://github.com/WildMeOrg/wbia-plugin-flukematch.git \
- #&& git clone https://github.com/WildMeOrg/wbia-plugin-finfindr.git \
- && git clone https://github.com/WildMeOrg/wbia-plugin-deepsense.git \
  && git clone https://github.com/WildMeOrg/wbia-plugin-pie-v2.git \
- && git clone --recurse-submodules https://github.com/WildMeOrg/wbia-plugin-miew-id.git \
- && git clone https://github.com/WildMeOrg/wbia-plugin-whaleridgefindr.git
+ && git clone --recurse-submodules https://github.com/WildMeOrg/wbia-plugin-miew-id.git
 
+# Clone upstream LightGlue, then LightGlue and Hybrid plug-in repositories
 RUN set -ex \
  && cd /wbia \
- && git clone --recursive https://github.com/WildMeOrg/wbia-plugin-blend.git \
- && cd /wbia/wbia-plugin-blend/wbia_blend \
+ && git clone https://github.com/cvg/LightGlue.git \
+ && git clone https://github.com/WildMeOrg/wbia-plugin-lightglue.git \
+ && git clone --recursive https://github.com/WildMeOrg/wbia-plugin-hybrid.git \
+ && cd /wbia/wbia-plugin-hybrid/wbia_hybrid \
  && git fetch origin \
  && git checkout main
 
-# Clone third-party WBIA plug-in repositories
-#RUN set -ex \
-# && cd /wbia \
-# && git clone --recursive https://github.com/WildMeOrg/wbia-plugin-curvrank.git \
-# && cd /wbia/wbia-plugin-curvrank/wbia_curvrank_v2 \
-# && git fetch origin \
-# && git checkout main
+# Deprecated/removed plugins: kaggle7, deepsense, whaleridgefindr, finfindr, curvrank, pie (v1), blend, lca
 
-RUN set -ex \
- && cd /wbia \
- && git clone --recursive https://github.com/WildMeOrg/wbia-plugin-kaggle7.git \
- && cd /wbia/wbia-plugin-kaggle7/wbia_kaggle7 \
- && git fetch origin \
- && git checkout main
+# Upgrade pip, setuptools and wheel before installing any packages
+# Upgrade pip/setuptools/wheel.  Pin setuptools<75 because 75+ drops pkg_resources
+# from build-isolation overlays, breaking legacy packages (brambox, visdom, etc.).
+RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
+ && pip install --upgrade "pip>=23,<26" "setuptools>=69,<75" wheel'
 
-RUN set -ex \
- && cd /wbia \
- && git clone --recursive https://github.com/WildMeOrg/wbia-plugin-lca.git \
- && cd /wbia/wbia-plugin-lca/wbia_lca \
- && git fetch origin \
- && git checkout main
+# Constrain setuptools in ALL pip build-isolation environments so that
+# transitive dependencies also get a setuptools with working pkg_resources.
+RUN echo "setuptools<75" > /tmp/pip-constraints.txt
+ENV PIP_CONSTRAINT=/tmp/pip-constraints.txt
+
+# Install PyTorch with CUDA early so subsequent pip installs find it satisfied
+# (avoids downloading CPU-only torch multiple times then replacing it later)
+RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
+ && pip install --no-cache-dir \
+     torch==2.0.1 \
+     torchvision==0.15.2 \
+     torchaudio==2.0.2 \
+     --extra-index-url https://download.pytorch.org/whl/cu117'
 
 # WBIA Toolkits
 RUN set -ex \
@@ -102,12 +97,11 @@ RUN set -ex \
 
 RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
  && cd /wbia/wbia-deprecate-tpl-brambox \
- && pip install --no-cache-dir -e .'
+ && pip install --no-build-isolation --no-cache-dir -e .'
 
 RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
  && cd /wbia/wbia-deprecate-tpl-lightnet \
- && /virtualenv/env3/bin/pip install --no-cache-dir -r develop.txt \
- && pip install --no-cache-dir -e .'
+ && pip install --no-build-isolation --no-cache-dir -e .'
 
 
 # Install Rust non-interactively (required for timm library used in WBIA)
@@ -116,101 +110,58 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Wildbook IA
+# Note: run_developer_setup.sh uses editable install (pip install -e .) which
+# requires PEP 660 support that scikit-build lacks.  For Docker we install
+# requirements then do a regular (non-editable) install instead.
 RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
  && cd /wbia/wildbook-ia \
- && /bin/bash run_developer_setup.sh \
+ && pip install --no-cache-dir -r requirements.txt \
+ && pip install --no-cache-dir . \
  && pip install --no-cache-dir -r requirements/postgres.txt'
 
 # WBIA third-party plug-ins
-RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
- && cd /wbia/wbia-plugin-cnn \
- && /bin/bash run_developer_setup.sh'
-
+# CNN plugin removed (depends on theano/lasagne, incompatible with Python 3.10+)
 RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
  && cd /wbia/wbia-plugin-pie-v2 \
  && /bin/bash run_developer_setup.sh'
 
-RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
- && cd /wbia/wbia-plugin-blend \
- && pip install --no-cache-dir -e .'
-
-#RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
-# && cd /wbia/wbia-plugin-finfindr \
-# && pip install --no-cache-dir -e .'
-
-RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
- && cd /wbia/wbia-plugin-whaleridgefindr \
- && pip install --no-cache-dir -e .'
-
-RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
- && cd /wbia/wbia-plugin-deepsense \
- && pip install --no-cache-dir -e .'
-
-RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
- && cd /wbia/wbia-plugin-kaggle7 \
- && pip install --no-cache-dir -e .'
-
-RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
- && cd /wbia/wbia-plugin-lca \
- && pip install --no-cache-dir -e .'
+# Deprecated/removed plugin installs: finfindr, whaleridgefindr, deepsense, kaggle7, blend, lca
 
 RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
  && cd /wbia/wbia-plugin-orientation \
- && pip install --no-cache-dir -e .'
+ && pip install --no-cache-dir .'
 
 RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
- && cd /wbia/wbia-plugin-flukematch \
- && ./unix_build.sh \
- && pip install --no-cache-dir -e .'
+ && cd /wbia/LightGlue \
+ && pip install --no-cache-dir . \
+ && cd /wbia/wbia-plugin-lightglue \
+ && pip install --no-cache-dir .'
 
-#RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
-# && cd /wbia/wbia-plugin-curvrank \
-# && ./unix_build.sh \
-# && pip install --no-cache-dir -e .'
+RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
+ && cd /wbia/wbia-plugin-hybrid \
+ && pip install --no-cache-dir .'
 
-# Ensure no previous or deprecated repositories are installed
-# Ensure that opencv-python is un-installed since we want to use our built version
-# Ensure specific version of keras and tensorflow-gpu are installed (for Pie support)
-RUN set -ex \
- && /virtualenv/env3/bin/pip uninstall -y \
-     dtool-ibeis \
-     guitool-ibeis \
-     plottool-ibeis \
-     utool-ibeis \
-     vtool-ibeis \
-     dtool \
-     guitool \
-     plottool \
-     utool \
-     vtool \
-     lightnet \
-     brambox \
- && /virtualenv/env3/bin/pip uninstall -y \
-     opencv-python \
-     opencv-contrib-python \
-     opencv-python-headless \
-     opencv-contrib-python-headless \
-     tensorflow \
-     tensorflow-gpu \
-     tensorflow-estimator \
-     tensorboard \
-     tensorboard-plugin-wit \
-     keras \
-     torch \
-     torchvision \
-     torchaudio \
- && /virtualenv/env3/bin/pip install --no-cache-dir \
+# pairx submodule lacks __init__.py files needed by find_packages()
+RUN find /wbia/wbia-plugin-miew-id/wbia_miew_id -type d \
+    ! -path '*__pycache__*' ! -path '*.git*' \
+    ! -exec test -f '{}/__init__.py' \; \
+    -exec sh -c 'echo "# -*- coding: utf-8 -*-" > "{}/__init__.py"' \;
+
+RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
+ && cd /wbia/wbia-plugin-miew-id \
+ && pip install --no-cache-dir timm grad-cam optuna zennit python-dotenv albumentations \
+ && pip install --no-cache-dir .'
+
+# Clean up old/conflicting packages (torch already installed early with CUDA)
+RUN /virtualenv/env3/bin/pip uninstall -y \
+     dtool-ibeis guitool-ibeis plottool-ibeis utool-ibeis vtool-ibeis \
+     dtool guitool plottool utool vtool \
+     lightnet brambox \
+     opencv-python opencv-contrib-python \
+     opencv-python-headless opencv-contrib-python-headless \
+ ; /virtualenv/env3/bin/pip install --no-cache-dir \
      pynvml \
- && /virtualenv/env3/bin/pip install --no-cache-dir --upgrade \
-     opencv-contrib-python-headless \
- && /virtualenv/env3/bin/pip install --no-cache-dir --upgrade --pre \
-     torch==1.12.1 \
-     torchvision \
-     torchaudio \
-     --extra-index-url https://download.pytorch.org/whl/nightly/cu113 \
- && /virtualenv/env3/bin/pip install --no-cache-dir \
-     MarkupSafe==2.0.1 \
-     Flask==2.1.0
+     opencv-contrib-python-headless
 
 # Wildbook IA problematic dependencies
 RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
@@ -222,4 +173,4 @@ RUN set -ex \
  && /virtualenv/env3/bin/pip uninstall -y \
      wildbook-ia \
  && cd /wbia/wildbook-ia \
- && /virtualenv/env3/bin/pip install --no-cache-dir -e .
+ && /virtualenv/env3/bin/pip install --no-cache-dir .

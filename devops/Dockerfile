@@ -3,31 +3,26 @@ ARG WBIA_BASE_IMAGE=wildme/wbia-base:latest
 ARG WBIA_PROVISION_IMAGE=wildme/wbia-provision:latest
 
 FROM ${WBIA_PROVISION_IMAGE} as org.wildme.wbia.latest
-#  && cd /wbia/wbia-plugin-curvrank/wbia_curvrank_v2 \
-# && git reset --hard origin/main \
-# && git pull \
+
+ARG VCS_REF="main"
 
 # Grab latest code
 RUN set -ex \
  && git config --global user.email "dev@wildme.org" \
  && git config --global user.name "Wild Me" \
  && find /wbia/wbia* -name '.git' -type d -print0 | xargs -0 -i /bin/bash -c \
-    'cd {} && cd .. && echo $(pwd) && git reset --hard origin/main && git pull' \
+    'cd {} && cd .. && echo $(pwd) && git reset --hard origin/main && git pull || echo "SKIP (no remote): $(pwd)"' \
 
- && cd /wbia/wbia-plugin-kaggle7/wbia_kaggle7 \
- && git reset --hard origin/main \
- && git pull \
- && cd /wbia/wbia-plugin-lca/wbia_lca \
+ && cd /wbia/wbia-plugin-hybrid/wbia_hybrid \
  && git reset --hard origin/main \
  && git pull \
  && cd /wbia/wbia-plugin-orientation/ \
  && git reset --hard origin/main \
  && git pull \
  && cd /wbia/wildbook-ia/ \
- && git fetch \
- && git reset --hard origin/main  \
- && git config pull.rebase true \
- && git pull
+ && git fetch origin ${VCS_REF} \
+ && git checkout ${VCS_REF} \
+ && git reset --hard origin/${VCS_REF}
 
 ##########################################################################################
 
@@ -69,9 +64,6 @@ COPY --from=org.wildme.wbia.latest /virtualenv /virtualenv
 
 COPY --from=org.wildme.wbia.latest /wbia /wbia
 
-# theano configuration file
-COPY ./_config/theanorc /root/.theanorc
-
 # setup script for python development
 COPY ./_config/setup.sh /bin/setup
 
@@ -94,9 +86,9 @@ COPY ./_config/healthcheck.py /bin/healthcheck.py
 RUN updatedb
 
 # Temporary fix for ARM64
-#ENV LD_PRELOAD "${LD_PRELOAD}:/virtualenv/env3/lib/python3.7/site-packages/torch/lib/libgomp-d22c30c5.so.1"
+#ENV LD_PRELOAD "${LD_PRELOAD}:/virtualenv/env3/lib/python3.10/site-packages/torch/lib/libgomp-d22c30c5.so.1"
 
-#ENV LD_PRELOAD "${LD_PRELOAD}:/virtualenv/env3/lib/python3.7/site-packages/scikit_image.libs/libgomp-d22c30c5.so.1.0.0"
+#ENV LD_PRELOAD "${LD_PRELOAD}:/virtualenv/env3/lib/python3.10/site-packages/scikit_image.libs/libgomp-d22c30c5.so.1.0.0"
 
 # Fix PyQt5
 RUN set -ex \
@@ -118,11 +110,6 @@ RUN set -ex \
  && rm -rf /var/cache/apt \
  && rm -rf /var/lib/apt/lists/*
 
-# Fix Lasagne
-RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
- && cd /wbia/wbia-plugin-cnn \
- && /bin/bash run_developer_setup.sh'
-
 # Fix OpenCV
 RUN set -ex \
  && /virtualenv/env3/bin/pip uninstall -y \
@@ -133,33 +120,23 @@ RUN set -ex \
  && /virtualenv/env3/bin/pip install --no-cache-dir --upgrade \
      opencv-contrib-python-headless \
  && /virtualenv/env3/bin/pip uninstall -y \
-     nvidia_cublas_cu11
+     nvidia_cublas_cu11 \
+ && /virtualenv/env3/bin/pip install --no-cache-dir --force-reinstall \
+     "numpy>=1.22.0,<1.24"
 
 # Run smoke tests
-# && /virtualenv/env3/bin/python -c "import wbia;             from wbia.__main__ import smoke_test; smoke_test()" \
-# && /virtualenv/env3/bin/python -c "import wbia_flukematch;  from wbia_flukematch.plugin   import *" \  -- commented out due to Lasagne package dependency issues
-#  && /virtualenv/env3/bin/python -c "import wbia_finfindr;    from wbia_finfindr.__main__ import main;      main()" \
-#  && /virtualenv/env3/bin/python -c "import wbia_curvrank_v2; from wbia_curvrank_v2._plugin import *" \
-#&& /virtualenv/env3/bin/python -c "import wbia_finfindr;    from wbia_finfindr._plugin    import *" \
-# && /virtualenv/env3/bin/python -c "import wbia_whaleridgefindr;    from wbia_whaleridgefindr._plugin     import *" \
-
-
 RUN set -ex \
  && mkdir -p /data \
  && /virtualenv/env3/bin/python -m wbia.dev --set-workdir /data --preload-exit \
- && /virtualenv/env3/bin/python -c "import wbia;             from wbia.__main__ import smoke_test; smoke_test()" \ 
- && /virtualenv/env3/bin/python -c "import wbia_cnn;         from wbia_cnn.__main__ import main;         main()" \
+ && /virtualenv/env3/bin/python -c "import wbia;             from wbia.__main__ import smoke_test; smoke_test()" \
  && /virtualenv/env3/bin/python -c "import wbia_pie_v2;      from wbia_pie_v2.__main__ import main;      main()" \
- && /virtualenv/env3/bin/python -c "import wbia_blend;       from wbia_blend._plugin import *" \
  && /virtualenv/env3/bin/python -c "import wbia_orientation; from wbia_orientation.__main__ import main; main()" \
- && /virtualenv/env3/bin/python -c "import wbia_whaleridgefindr;    from wbia_whaleridgefindr._plugin     import *" \
- && /virtualenv/env3/bin/python -c "import wbia_kaggle7;     from wbia_kaggle7._plugin     import *" \
- && /virtualenv/env3/bin/python -c "import wbia_lca;         from wbia_lca._plugin         import *" \
- && /virtualenv/env3/bin/python -c "import wbia_deepsense;   from wbia_deepsense._plugin   import *" \
- && find /wbia/wbia* -name '*.a' -print      | grep -v "cpython-37m-x86_64-linux-gnu" | grep -v "cpython-37m-aarch64-linux-gnu.so" | xargs -i /bin/bash -c 'echo {} && ld -d {}' \
- && find /wbia/wbia* -name '*.so' -print     | grep -v "cpython-37m-x86_64-linux-gnu" | grep -v "cpython-37m-aarch64-linux-gnu.so" | xargs -i /bin/bash -c 'echo {} && ld -d {}' \
- && find /wbia/wildbook* -name '*.a' -print  | grep -v "cpython-37m-x86_64-linux-gnu" | grep -v "cpython-37m-aarch64-linux-gnu.so" | xargs -i /bin/bash -c 'echo {} && ld -d {}' \
- && find /wbia/wildbook* -name '*.so' -print | grep -v "cpython-37m-x86_64-linux-gnu" | grep -v "cpython-37m-aarch64-linux-gnu.so" | xargs -i /bin/bash -c 'echo {} && ld -d {}'
+ && /virtualenv/env3/bin/python -c "import wbia_lightglue;   from wbia_lightglue._plugin   import *" \
+ && /virtualenv/env3/bin/python -c "import wbia_hybrid;      from wbia_hybrid._plugin      import *" \
+ && find /wbia/wbia* -name '*.a' -print      | grep -v "cpython-310-x86_64-linux-gnu" | grep -v "cpython-310-aarch64-linux-gnu.so" | xargs -i /bin/bash -c 'echo {} && ld -d {}' \
+ && find /wbia/wbia* -name '*.so' -print     | grep -v "cpython-310-x86_64-linux-gnu" | grep -v "cpython-310-aarch64-linux-gnu.so" | xargs -i /bin/bash -c 'echo {} && ld -d {}' \
+ && find /wbia/wildbook* -name '*.a' -print  | grep -v "cpython-310-x86_64-linux-gnu" | grep -v "cpython-310-aarch64-linux-gnu.so" | xargs -i /bin/bash -c 'echo {} && ld -d {}' \
+ && find /wbia/wildbook* -name '*.so' -print | grep -v "cpython-310-x86_64-linux-gnu" | grep -v "cpython-310-aarch64-linux-gnu.so" | xargs -i /bin/bash -c 'echo {} && ld -d {}'
 
 
 # Undo Fix
@@ -180,6 +157,6 @@ CMD []
 ##########################################################################################
 FROM org.wildme.wbia.install as org.wildme.wbia.depricated
 
-COPY ./_config/deprecated.sh /bin/deprecated
-
-RUN if [ "$(uname -m)" != "aarch64" ] ; then deprecated ; fi
+# PIE v1 + TensorFlow 1.15 are incompatible with Python 3.10; skipped.
+# COPY ./_config/deprecated.sh /bin/deprecated
+# RUN if [ "$(uname -m)" != "aarch64" ] ; then deprecated ; fi

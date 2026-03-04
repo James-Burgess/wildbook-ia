@@ -1,7 +1,7 @@
 
 export CODE=/home/$( whoami )/code
 
-export VENV=/home/$( whoami )/virtualenv/wildme3.7
+export VENV=/home/$( whoami )/virtualenv/wildme3.10
 
 export LC_ALL=C.UTF-8
 
@@ -43,9 +43,9 @@ export OPENCV_VERSION=3.4.11
 #     ca-certificates \
 #     build-essential \
 #     pkg-config \
-#     python3.7 \
-#     python3.7-dev \
-#     python3.7-gdbm \
+#     python3.10 \
+#     python3.10-dev \
+#     python3.10-gdbm \
 #     python3-pip \
 #     libncurses5-dev \
 #     libncursesw5-dev \
@@ -69,7 +69,7 @@ export OPENCV_VERSION=3.4.11
 
 pip3 install --no-cache-dir virtualenv
 
-virtualenv -p $(which python3.7) ${VENV}
+virtualenv -p $(which python3) ${VENV}
 
 source ${VENV}/bin/activate
 
@@ -178,7 +178,7 @@ pip install --no-cache-dir -e .
 
 pip install --no-cache-dir pygraphviz --install-option="--include-path=/usr/include/graphviz" --install-option="--library-path=/usr/lib/graphviz/"
 
-cp -r ${VIRTUAL_ENV}/lib/python3.7/site-packages/cv2 /tmp/cv2
+cp -r ${VIRTUAL_ENV}/lib/python3.10/site-packages/cv2 /tmp/cv2
 
 cd ${CODE}
 git clone --branch develop https://github.com/WildMeOrg/wildbook-ia.git
@@ -191,24 +191,8 @@ git clone --branch develop https://github.com/WildMeOrg/wbia-tpl-pyrf.git
 git clone --branch develop https://github.com/WildMeOrg/wbia-deprecate-tpl-brambox
 git clone --branch develop https://github.com/WildMeOrg/wbia-deprecate-tpl-lightnet
 git clone --recursive --branch develop https://github.com/WildMeOrg/wbia-plugin-cnn.git
-git clone --branch develop https://github.com/WildMeOrg/wbia-plugin-flukematch.git
-#git clone --branch develop https://github.com/WildMeOrg/wbia-plugin-finfindr.git
-git clone --branch develop https://github.com/WildMeOrg/wbia-plugin-deepsense.git
-git clone --branch develop https://github.com/WildMeOrg/wbia-plugin-whaleridgefindr.git
-git clone --branch develop https://github.com/WildMeOrg/wbia-plugin-pie.git
 git clone https://github.com/WildMeOrg/wbia-plugin-blend.git
-
-#cd ${CODE}
-#git clone --recursive --branch develop https://github.com/WildMeOrg/wbia-plugin-curvrank.git
-#cd wbia-plugin-curvrank/wbia_curvrank
-#git fetch origin
-#git checkout develop
-
-cd ${CODE}
-git clone --recursive --branch develop https://github.com/WildMeOrg/wbia-plugin-kaggle7.git
-cd wbia-plugin-kaggle7/wbia_kaggle7
-git fetch origin
-git checkout develop
+# Deprecated plugins removed: flukematch, deepsense, whaleridgefindr, pie (v1), finfindr, curvrank, kaggle7
 
 cd ${CODE}
 git clone --recursive --branch develop https://github.com/WildMeOrg/wbia-plugin-lca.git
@@ -244,34 +228,13 @@ cd ${CODE}/wildbook-ia
 cd ${CODE}/wbia-plugin-cnn
 ./run_developer_setup.sh
 
-cd ${CODE}/wbia-plugin-pie
-./run_developer_setup.sh
-
 cd ${CODE}/wbia-plugin-blend
 pip install --no-cache-dir -e .
 
-#cd ${CODE}/wbia-plugin-finfindr
-#pip install --no-cache-dir -e .
-
-cd ${CODE}/wbia-plugin-whaleridgefindr
-pip install --no-cache-dir -e .
-
-cd ${CODE}/wbia-plugin-deepsense
-pip install --no-cache-dir -e .
-
-cd ${CODE}/wbia-plugin-kaggle7
-pip install --no-cache-dir -e .
+# Deprecated plugin installs removed (flukematch, pie v1, finfindr, whaleridgefindr, deepsense, kaggle7)
 
 cd ${CODE}/wbia-plugin-lca
 pip install --no-cache-dir -e .
-
-cd ${CODE}/wbia-plugin-flukematch
-./unix_build.sh
-pip install --no-cache-dir -e .
-
-#cd ${CODE}/wbia-plugin-curvrank
-#./unix_build.sh
-#pip install --no-cache-dir -e .
 
 pip uninstall -y \
     opencv-python \
@@ -307,20 +270,14 @@ pip install --no-cache-dir \
     tensorflow-gpu==1.15.4 \
     keras==2.2.5
 
-rm -rf ${VIRTUAL_ENV}/lib/python3.7/site-packages/cv2*
-cp -r /tmp/cv2 ${VIRTUAL_ENV}/lib/python3.7/site-packages/cv2
+rm -rf ${VIRTUAL_ENV}/lib/python3.10/site-packages/cv2*
+cp -r /tmp/cv2 ${VIRTUAL_ENV}/lib/python3.10/site-packages/cv2
 rm -rf /tmp/cv2
 
 # python -c "import wbia;            from wbia.__main__ import smoke_test; smoke_test()"
 python -c "import wbia_cnn;        from wbia_cnn.__main__ import main;   main()"
-python -c "import wbia_pie;        from wbia_pie.__main__ import main;   main()"
 python -c "import wbia_blend;      from wbia_blend._plugin import *"
-python -c "import wbia_flukematch; from wbia_flukematch.plugin import *"
-#python -c "import wbia_curvrank;   from wbia_curvrank._plugin  import *"
-#python -c "import wbia_finfindr;   from wbia_finfindr._plugin  import *"
-python -c "import wbia_whaleridgefindr;   from wbia_whaleridgefindr._plugin  import *"
-python -c "import wbia_kaggle7;    from wbia_kaggle7._plugin   import *"
-python -c "import wbia_deepsense;  from wbia_deepsense._plugin import *"
+# Deprecated plugin smoke tests removed (flukematch, pie v1, curvrank, finfindr, whaleridgefindr, kaggle7, deepsense)
 
 find ${CODE}/wbia* -name '*.a' -print0 | xargs -0 -i /bin/bash -c 'echo {} && ld -d {}'
 find ${CODE}/wbia* -name '*.so' -print0 | xargs -0 -i /bin/bash -c 'echo {} && ld -d {}'

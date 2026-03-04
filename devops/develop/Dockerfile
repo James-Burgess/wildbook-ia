@@ -15,7 +15,7 @@ RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
  && pip install --no-cache-dir -e .'
 
 # Temporary fix for ARM64
-ENV LD_PRELOAD "/virtualenv/env3/lib/python3.7/site-packages/torch/lib/libgomp-d22c30c5.so.1"
+ENV LD_PRELOAD "/virtualenv/env3/lib/python3.10/site-packages/torch/lib/libgomp-d22c30c5.so.1"
 
 RUN set -ex \
 

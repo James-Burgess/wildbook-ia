@@ -597,27 +597,8 @@ def start_identify_annots_query(
     if database_annot_uuid_list is not None and dname_list is not None:
         assert len(database_annot_uuid_list) == len(dname_list)
 
-    proot = query_config_dict.get('pipeline_root', 'vsmany')
-    proot = query_config_dict.get('proot', proot)
-    if proot.lower() in (
-        'curvrankdorsal',
-        'curvrankfinfindrhybriddorsal',
-        'curvrankfluke',
-        'curvranktwodorsal',
-        'curvranktwofluke',
-    ):
-        curvrank_daily_tag = query_config_dict.get('curvrank_daily_tag', '')
-        if len(curvrank_daily_tag) > 144:
-            message = 'The curvrank_daily_tag cannot have more than 128 characters, please shorten and try again.'
-            key = 'query_config_dict["curvrank_daily_tag"]'
-            value = curvrank_daily_tag
-            raise controller_inject.WebInvalidInput(message, key, value)
-    else:
-        logger.info(ut.repr3(query_config_dict))
-        pop_key_list = ['curvrank_daily_tag']
-        for pop_key in pop_key_list:
-            logger.info('Popping irrelevant key for config: {!r}'.format(pop_key))
-            query_config_dict.pop(pop_key, None)
+    # Remove deprecated curvrank config keys silently for backward compatibility
+    query_config_dict.pop('curvrank_daily_tag', None)
 
     # Check UUIDs
     if dname_list is not None:
