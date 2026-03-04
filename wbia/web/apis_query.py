@@ -1247,7 +1247,7 @@ def query_chips_graph(
     if return_summary:
         summary_list = [
             ('summary_annot', cm.annot_score_list),
-            ('summary_name', cm.name_score_list),
+            ('summary_name', cm.score_list),
         ]
         for summary_key, summary_score_list in summary_list:
             value_list = sorted(list(zip(summary_score_list, cm.daid_list)), reverse=True)
