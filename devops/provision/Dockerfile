@@ -58,6 +58,15 @@ RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
 RUN echo "setuptools<75" > /tmp/pip-constraints.txt
 ENV PIP_CONSTRAINT=/tmp/pip-constraints.txt
 
+# Install PyTorch with CUDA early so subsequent pip installs find it satisfied
+# (avoids downloading CPU-only torch multiple times then replacing it later)
+RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
+ && pip install --no-cache-dir \
+     torch==2.0.1 \
+     torchvision==0.15.2 \
+     torchaudio==2.0.2 \
+     --extra-index-url https://download.pytorch.org/whl/cu117'
+
 # WBIA Toolkits
 RUN set -ex \
  && /bin/bash -xc '. /virtualenv/env3/bin/activate \
@@ -92,7 +101,6 @@ RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
 
 RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
  && cd /wbia/wbia-deprecate-tpl-lightnet \
- && /virtualenv/env3/bin/pip install --no-build-isolation --no-cache-dir -r develop.txt \
  && pip install --no-build-isolation --no-cache-dir -e .'
 
 
@@ -144,45 +152,16 @@ RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
  && pip install --no-cache-dir timm grad-cam optuna zennit python-dotenv albumentations \
  && pip install --no-cache-dir .'
 
-# Ensure no previous or deprecated repositories are installed
-# Ensure that opencv-python is un-installed since we want to use our built version
-RUN set -ex \
- && /virtualenv/env3/bin/pip uninstall -y \
-     dtool-ibeis \
-     guitool-ibeis \
-     plottool-ibeis \
-     utool-ibeis \
-     vtool-ibeis \
-     dtool \
-     guitool \
-     plottool \
-     utool \
-     vtool \
-     lightnet \
-     brambox \
- && /virtualenv/env3/bin/pip uninstall -y \
-     opencv-python \
-     opencv-contrib-python \
-     opencv-python-headless \
-     opencv-contrib-python-headless \
-     tensorflow \
-     tensorflow-gpu \
-     tensorflow-estimator \
-     tensorboard \
-     tensorboard-plugin-wit \
-     keras \
-     torch \
-     torchvision \
-     torchaudio \
- && /virtualenv/env3/bin/pip install --no-cache-dir \
+# Clean up old/conflicting packages (torch already installed early with CUDA)
+RUN /virtualenv/env3/bin/pip uninstall -y \
+     dtool-ibeis guitool-ibeis plottool-ibeis utool-ibeis vtool-ibeis \
+     dtool guitool plottool utool vtool \
+     lightnet brambox \
+     opencv-python opencv-contrib-python \
+     opencv-python-headless opencv-contrib-python-headless \
+ ; /virtualenv/env3/bin/pip install --no-cache-dir \
      pynvml \
- && /virtualenv/env3/bin/pip install --no-cache-dir --upgrade \
-     opencv-contrib-python-headless \
- && /virtualenv/env3/bin/pip install --no-cache-dir \
-     torch==2.0.1 \
-     torchvision==0.15.2 \
-     torchaudio==2.0.2 \
-     --extra-index-url https://download.pytorch.org/whl/cu117
+     opencv-contrib-python-headless
 
 # Wildbook IA problematic dependencies
 RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
