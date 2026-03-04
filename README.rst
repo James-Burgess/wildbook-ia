@@ -20,8 +20,8 @@ While WBIA can be set up independently, the Wild Me team is not able to assist w
 Requirements
 ------------
 
-* Python 3.7+
-* OpenCV 3.4.10
+* Python 3.10+
+* OpenCV 4.7+
 * Python dependencies listed in requirements.txt
 
 Installation Instructions
