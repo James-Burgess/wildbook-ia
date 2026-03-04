@@ -138,6 +138,8 @@ RUN set -ex \
  && find /wbia/wildbook* -name '*.a' -print  | grep -v "cpython-310-x86_64-linux-gnu" | grep -v "cpython-310-aarch64-linux-gnu.so" | xargs -i /bin/bash -c 'echo {} && ld -d {}' \
  && find /wbia/wildbook* -name '*.so' -print | grep -v "cpython-310-x86_64-linux-gnu" | grep -v "cpython-310-aarch64-linux-gnu.so" | xargs -i /bin/bash -c 'echo {} && ld -d {}'
 
+# Strip git history from source repos — not needed at runtime, saves ~1-2GB
+RUN find /wbia -name '.git' -type d -exec rm -rf {} + 2>/dev/null; true
 
 # Undo Fix
 ENV LD_PRELOAD ""
