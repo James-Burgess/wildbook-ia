@@ -10,7 +10,6 @@ from collections import OrderedDict
 from os.path import join
 
 import numpy as np
-import six
 import utool as ut
 
 (print, rrr, profile) = ut.inject2(__name__)
@@ -764,8 +763,7 @@ class _ConstHelper(type):
         return super(_ConstHelper, cls).__new__(cls, name, parents, dct)
 
 
-@six.add_metaclass(_ConstHelper)
-class EVIDENCE_DECISION(object):  # NOQA
+class EVIDENCE_DECISION(object, metaclass=_ConstHelper):  # NOQA
     """
     TODO: change to EVIDENCE_DECISION / VISUAL_DECISION
     Enumerated types of review codes and texts
@@ -812,8 +810,7 @@ class EVIDENCE_DECISION(object):  # NOQA
     MATCH_CODE = CODE_TO_INT
 
 
-@six.add_metaclass(_ConstHelper)
-class META_DECISION(object):  # NOQA
+class META_DECISION(object, metaclass=_ConstHelper):  # NOQA
     """
     Enumerated types of review codes and texts
 
@@ -846,8 +843,7 @@ class META_DECISION(object):  # NOQA
     NICE_TO_INT = ut.invert_dict(INT_TO_NICE)
 
 
-@six.add_metaclass(_ConstHelper)
-class CONFIDENCE(object):
+class CONFIDENCE(object, metaclass=_ConstHelper):
 
     UNKNOWN = None
     GUESSING = 1
@@ -881,8 +877,7 @@ class CONFIDENCE(object):
     NICE_TO_INT = ut.invert_dict(INT_TO_NICE)
 
 
-@six.add_metaclass(_ConstHelper)
-class QUAL(object):
+class QUAL(object, metaclass=_ConstHelper):
 
     EXCELLENT = 5
     GOOD = 4
@@ -919,8 +914,7 @@ class QUAL(object):
     NICE_TO_INT = ut.invert_dict(INT_TO_NICE)
 
 
-@six.add_metaclass(_ConstHelper)
-class VIEW(object):
+class VIEW(object, metaclass=_ConstHelper):
     """
     categorical viewpoint using the faces of a Rhombicuboctahedron
 

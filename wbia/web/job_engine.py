@@ -333,16 +333,6 @@ def get_job_status(ibs, jobid=None):
     return status
 
 
-# @register_ibs_method
-# @register_api('/api/engine/job/terminate/', methods=['GET', 'POST'])
-# def send_job_terminate(ibs, jobid):
-#     """
-#     Web call that terminates a job
-#     """
-#     success = ibs.job_manager.jobiface.terminate_job(jobid)
-#     return success
-
-
 @register_ibs_method
 @register_api(
     '/api/engine/job/metadata/', methods=['GET', 'POST'], __api_plural_check__=False
@@ -387,14 +377,6 @@ def get_job_result(ibs, jobid):
     """
     result = ibs.job_manager.jobiface.get_job_result(jobid)
     return result
-
-
-# @register_ibs_method
-# @register_api('/api/engine/job/result/wait/', methods=['GET', 'POST'])
-# def wait_for_job_result(ibs, jobid, timeout=10, freq=0.1):
-#     ibs.job_manager.jobiface.wait_for_job_result(jobid, timeout=timeout, freq=freq)
-#     result = ibs.job_manager.jobiface.get_unpacked_result(jobid)
-#     return result
 
 
 def _get_random_open_port():

@@ -2,7 +2,6 @@
 import itertools as it
 import logging
 
-import six
 import utool as ut
 
 from wbia import _wbia_object
@@ -274,8 +273,7 @@ except ImportError:
 
 
 # @ut.reloadable_class
-@six.add_metaclass(_AnnotPropInjector)
-class Annots(BASE):
+class Annots(BASE, metaclass=_AnnotPropInjector):
     """
     Represents a group of annotations. Efficiently accesses properties from a
     database using lazy evaluation.
@@ -466,8 +464,7 @@ class _AnnotGroupPropInjector(BASE_TYPE):
 
 
 @ut.reloadable_class
-@six.add_metaclass(_AnnotGroupPropInjector)
-class AnnotGroups(ut.NiceRepr):
+class AnnotGroups(ut.NiceRepr, metaclass=_AnnotGroupPropInjector):
     """Effciently handle operations on multiple groups of annotations"""
 
     def __init__(self, annots_list, ibs):
@@ -568,8 +565,7 @@ class _AnnotMatchPropInjector(BASE_TYPE):
         )
 
 
-@six.add_metaclass(_AnnotMatchPropInjector)
-class AnnotMatches(BASE):
+class AnnotMatches(BASE, metaclass=_AnnotMatchPropInjector):
     """
     Represents a group of annotations. Efficiently accesses properties from a
     database using lazy evaluation.

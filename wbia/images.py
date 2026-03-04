@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import logging
 
-import six
 import utool as ut
 
 from wbia import _wbia_object
@@ -122,8 +121,7 @@ class ImageIBEISPropertyInjector(BASE_TYPE):
 
 
 # @ut.reloadable_class
-@six.add_metaclass(ImageIBEISPropertyInjector)
-class Images(IMAGE_BASE):
+class Images(IMAGE_BASE, metaclass=ImageIBEISPropertyInjector):
     """
     Represents a group of annotations. Efficiently accesses properties from a
     database using lazy evaluation.
@@ -249,8 +247,7 @@ class ImageSetAttrInjector(BASE_TYPE):
 
 
 # @ut.reloadable_class
-@six.add_metaclass(ImageSetAttrInjector)
-class ImageSets(IMAGESET_BASE):
+class ImageSets(IMAGESET_BASE, metaclass=ImageSetAttrInjector):
     """
     Represents a group of annotations. Efficiently accesses properties from a
     database using lazy evaluation.

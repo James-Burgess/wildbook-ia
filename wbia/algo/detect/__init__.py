@@ -3,11 +3,6 @@
 # flake8: noqa
 import logging
 
-# from wbia.algo.detect import train_assigner
-# from wbia.algo.detect import selectivesearch
-# from wbia.algo.detect import ssd
-# from wbia.algo.detect import fasterrcnn
-# from wbia.algo.detect import darknet
 import utool
 
 from wbia.algo.detect import assigner, densenet, grabmodels, randomforest, yolo
@@ -76,10 +71,6 @@ def reload_subs(verbose=True):
     get_rrr(randomforest)(verbose=verbose)
     get_rrr(densenet)(verbose=verbose)
     get_rrr(yolo)(verbose=verbose)
-    # get_rrr(selectivesearch)(verbose=verbose)
-    # get_rrr(ssd)(verbose=verbose)
-    # get_rrr(fasterrcnn)(verbose=verbose)
-    # get_rrr(darknet)(verbose=verbose)
     rrr(verbose=verbose)
     try:
         # hackish way of propogating up the new reloaded submodule attributes
@@ -96,10 +87,6 @@ IMPORT_TUPLES = [
     ('densenet', None),
     ('yolo', None),
     ('assigner', None),
-    # ('selectivesearch', None),
-    # ('ssd', None),
-    # ('fasterrcnn', None),
-    # ('darknet', None),
 ]
 """
 Regen Command:
