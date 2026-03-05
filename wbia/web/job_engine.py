@@ -84,7 +84,16 @@ CLASS_INJECT_KEY, register_ibs_method = controller_inject.make_ibs_register_deco
 )
 register_api = controller_inject.get_wbia_flask_api(__name__)
 
-ctx = zmq.Context.instance()
+def _get_global_zmq_ctx():
+    """Return the process-global ZMQ context (created on first call).
+
+    Lazy so that importing this module in the Gunicorn master does not
+    create a ZMQ context that would be inherited (and become invalid)
+    across fork().  Background processes (engine, collector) each call
+    this in their own process after being spawned via multiprocessing.
+    """
+    return zmq.Context.instance()
+
 
 # FIXME: needs to use correct number of ports
 URL = 'tcp://127.0.0.1'
@@ -218,15 +227,14 @@ def initialize_job_manager(ibs):
     ibs.job_manager.jobiface = JobInterface(
         0, ibs.job_manager.reciever.port_dict, ibs=ibs
     )
-    ibs.job_manager.jobiface.initialize_client_thread()
-    # Wait until the collector becomes live
-    while 0 and True:
-        result = ibs.get_job_status(-1)
-        print('result = {!r}'.format(result))
-        if result['status'] == 'ok':
-            break
 
+    # Use temporary sockets for startup tasks (queue_interrupted_jobs).
+    # These must be opened, used, and CLOSED before Gunicorn forks,
+    # because ZMQ sockets cannot survive fork().  The permanent sockets
+    # for request handling are created lazily post-fork via _ensure_sockets().
+    ibs.job_manager.jobiface.initialize_client_thread()
     ibs.job_manager.jobiface.queue_interrupted_jobs()
+    ibs.job_manager.jobiface.close_client_sockets()
 
     # import wbia
     # #dbdir = '/media/raid/work/testdb1'
@@ -842,13 +850,29 @@ class JobInterface(object):
         # thread-safe, so every send/recv pair must be atomic.
         jobiface._engine_lock = threading.Lock()
         jobiface._collect_lock = threading.Lock()
+        jobiface._init_lock = threading.Lock()
         jobiface.engine_recieve_socket = None
         jobiface.collect_recieve_socket = None
         print('JobInterface ports:')
         ut.print_dict(jobiface.port_dict)
 
+    def _ensure_sockets(jobiface):
+        """Lazily create ZMQ sockets on first use (post-fork).
+
+        Acquires both request locks during initialization to prevent a
+        collect-path thread from overwriting a live engine socket (or
+        vice versa).  The _init_lock serializes the init itself.
+        """
+        if jobiface.engine_recieve_socket is not None and jobiface.collect_recieve_socket is not None:
+            return
+        with jobiface._init_lock:
+            if jobiface.engine_recieve_socket is not None and jobiface.collect_recieve_socket is not None:
+                return
+            jobiface.initialize_client_thread()
+
     def _engine_request(jobiface, msg):
         """Send a message to the engine and return the reply (thread-safe)."""
+        jobiface._ensure_sockets()
         with jobiface._engine_lock:
             try:
                 jobiface.engine_recieve_socket.send_json(msg)
@@ -861,6 +885,7 @@ class JobInterface(object):
 
     def _collect_request(jobiface, msg):
         """Send a message to the collector and return the reply (thread-safe)."""
+        jobiface._ensure_sockets()
         with jobiface._collect_lock:
             try:
                 jobiface.collect_recieve_socket.send_json(msg)
@@ -874,34 +899,27 @@ class JobInterface(object):
     def __del__(jobiface):
         if VERBOSE_JOBS:
             print('Cleaning up job frontend')
-        # Best-effort cleanup — use non-blocking acquire to avoid hanging
-        # at shutdown if another thread holds the lock.
-        try:
-            lock = getattr(jobiface, '_engine_lock', None)
-            sock = getattr(jobiface, 'engine_recieve_socket', None)
-            if sock is not None:
-                acquired = lock.acquire(blocking=False) if lock else True
+        # Best-effort cleanup — skip if lock not acquired to avoid both
+        # hanging at shutdown and racing with active request threads.
+        for attr, lock_attr, url_key in [
+            ('engine_recieve_socket', '_engine_lock', 'engine_pull_url'),
+            ('collect_recieve_socket', '_collect_lock', 'collect_pull_url'),
+        ]:
+            try:
+                lock = getattr(jobiface, lock_attr, None)
+                sock = getattr(jobiface, attr, None)
+                if sock is None:
+                    continue
+                acquired = lock.acquire(blocking=False) if lock else False
+                if not acquired:
+                    continue  # another thread owns the socket — let it clean up
                 try:
-                    sock.disconnect(jobiface.port_dict['engine_pull_url'])
-                    sock.close()
+                    sock.disconnect(jobiface.port_dict[url_key])
+                    sock.close(linger=0)
                 finally:
-                    if acquired and lock:
-                        lock.release()
-        except Exception:
-            pass
-        try:
-            lock = getattr(jobiface, '_collect_lock', None)
-            sock = getattr(jobiface, 'collect_recieve_socket', None)
-            if sock is not None:
-                acquired = lock.acquire(blocking=False) if lock else True
-                try:
-                    sock.disconnect(jobiface.port_dict['collect_pull_url'])
-                    sock.close()
-                finally:
-                    if acquired and lock:
-                        lock.release()
-        except Exception:
-            pass
+                    lock.release()
+            except Exception:
+                pass
 
     # def init(jobiface):
     #     # Starts several new processes
@@ -909,19 +927,37 @@ class JobInterface(object):
     #     # Does not create a new process, but connects sockets on this process
     #     jobiface.initialize_client_thread()
 
+    def close_client_sockets(jobiface):
+        """Close ZMQ client sockets and context (call before fork)."""
+        if jobiface.engine_recieve_socket is not None:
+            jobiface.engine_recieve_socket.close()
+            jobiface.engine_recieve_socket = None
+        if jobiface.collect_recieve_socket is not None:
+            jobiface.collect_recieve_socket.close()
+            jobiface.collect_recieve_socket = None
+        zmq_ctx = getattr(jobiface, '_zmq_ctx', None)
+        if zmq_ctx is not None:
+            zmq_ctx.term()
+            jobiface._zmq_ctx = None
+
     def initialize_client_thread(jobiface):
         """
-        Creates a ZMQ object in this thread. This talks to background processes.
+        Creates ZMQ sockets for talking to background engine/collector processes.
+        Safe to call multiple times — will create fresh sockets each time.
+        After fork(), the old context is invalid, so we always create a new one.
         """
         if jobiface.verbose:
             print('Initializing JobInterface')
-        jobiface.engine_recieve_socket = ctx.socket(zmq.DEALER)  # CHECK2 - REQ
+        # Create a fresh ZMQ context for this process (critical after fork)
+        jobiface._zmq_ctx = zmq.Context()
+        jobiface.engine_recieve_socket = jobiface._zmq_ctx.socket(zmq.DEALER)  # CHECK2 - REQ
         jobiface.engine_recieve_socket.setsockopt_string(
             zmq.IDENTITY, 'client{}.engine.DEALER'.format(jobiface.id_)
         )
         # Timeout recv after 120s to prevent permanent lock starvation if
         # the engine process dies.  Raises zmq.error.Again on timeout.
         jobiface.engine_recieve_socket.setsockopt(zmq.RCVTIMEO, 120000)
+        jobiface.engine_recieve_socket.setsockopt(zmq.LINGER, 0)
         jobiface.engine_recieve_socket.connect(jobiface.port_dict['engine_pull_url'])
         if jobiface.verbose:
             print(
@@ -930,11 +966,12 @@ class JobInterface(object):
                 )
             )
 
-        jobiface.collect_recieve_socket = ctx.socket(zmq.DEALER)  # CHECK2 - REQ
+        jobiface.collect_recieve_socket = jobiface._zmq_ctx.socket(zmq.DEALER)  # CHECK2 - REQ
         jobiface.collect_recieve_socket.setsockopt_string(
             zmq.IDENTITY, 'client{}.collect.DEALER'.format(jobiface.id_)
         )
         jobiface.collect_recieve_socket.setsockopt(zmq.RCVTIMEO, 120000)
+        jobiface.collect_recieve_socket.setsockopt(zmq.LINGER, 0)
         jobiface.collect_recieve_socket.connect(jobiface.port_dict['collect_pull_url'])
         if jobiface.verbose:
             print(
@@ -1273,14 +1310,14 @@ def collect_queue_loop(port_dict):
     if VERBOSE_JOBS:
         print('Init make_queue_loop: name={!r}'.format(name))
     # bind the client dealer to the queue router
-    recieve_socket = ctx.socket(zmq.ROUTER)  # CHECKED - ROUTER
+    recieve_socket = _get_global_zmq_ctx().socket(zmq.ROUTER)  # CHECKED - ROUTER
     recieve_socket.setsockopt_string(zmq.IDENTITY, 'queue.' + name + '.' + 'ROUTER')
     recieve_socket.bind(interface_pull)
     if VERBOSE_JOBS:
         print('bind {}_url1 = {!r}'.format(name, interface_pull))
 
     # bind the server router to the queue dealer
-    send_socket = ctx.socket(zmq.DEALER)  # CHECKED - DEALER
+    send_socket = _get_global_zmq_ctx().socket(zmq.DEALER)  # CHECKED - DEALER
     send_socket.setsockopt_string(zmq.IDENTITY, 'queue.' + name + '.' + 'DEALER')
     send_socket.bind(interface_push)
     if VERBOSE_JOBS:
@@ -1322,7 +1359,7 @@ def engine_queue_loop(port_dict, engine_lanes):
     print('Init specialized make_queue_loop: name={!r}'.format(name))
 
     # bind the client dealer to the queue router
-    engine_receive_socket = ctx.socket(zmq.ROUTER)  # CHECK2 - REP
+    engine_receive_socket = _get_global_zmq_ctx().socket(zmq.ROUTER)  # CHECK2 - REP
     engine_receive_socket.setsockopt_string(
         zmq.IDENTITY, 'special_queue.' + name + '.' + 'ROUTER'
     )
@@ -1333,7 +1370,7 @@ def engine_queue_loop(port_dict, engine_lanes):
     # bind the server router to the queue dealer
     engine_send_socket_dict = {}
     for lane in interface_engine_push_dict:
-        engine_send_socket = ctx.socket(zmq.DEALER)  # CHECKED - DEALER
+        engine_send_socket = _get_global_zmq_ctx().socket(zmq.DEALER)  # CHECKED - DEALER
         engine_send_socket.setsockopt_string(
             zmq.IDENTITY, 'special_queue.' + lane + '.' + name + '.' + 'DEALER'
         )
@@ -1346,7 +1383,7 @@ def engine_queue_loop(port_dict, engine_lanes):
             )
         engine_send_socket_dict[lane] = engine_send_socket
 
-    collect_recieve_socket = ctx.socket(zmq.DEALER)  # CHECKED - DEALER
+    collect_recieve_socket = _get_global_zmq_ctx().socket(zmq.DEALER)  # CHECKED - DEALER
     collect_recieve_socket.setsockopt_string(zmq.IDENTITY, queue_name + '.collect.DEALER')
     collect_recieve_socket.connect(interface_collect_pull)
     if VERBOSE_JOBS:
@@ -1595,14 +1632,14 @@ def engine_loop(id_, port_dict, dbdir, containerized, lane):
 
     assert dbdir is not None
 
-    engine_send_sock = ctx.socket(zmq.ROUTER)  # CHECKED - ROUTER
+    engine_send_sock = _get_global_zmq_ctx().socket(zmq.ROUTER)  # CHECKED - ROUTER
     engine_send_sock.setsockopt_string(
         zmq.IDENTITY,
         'engine.{}.{}'.format(lane, id_),
     )
     engine_send_sock.connect(interface_engine_push)
 
-    collect_recieve_socket = ctx.socket(zmq.DEALER)
+    collect_recieve_socket = _get_global_zmq_ctx().socket(zmq.DEALER)
     collect_recieve_socket.setsockopt_string(
         zmq.IDENTITY,
         'engine.{}.{}.collect.DEALER'.format(lane, id_),
@@ -1817,7 +1854,7 @@ def collector_loop(port_dict, dbdir, containerized):
     import wbia
 
     print = partial(ut.colorprint, color='yellow')
-    collect_rout_sock = ctx.socket(zmq.ROUTER)  # CHECK2 - PULL
+    collect_rout_sock = _get_global_zmq_ctx().socket(zmq.ROUTER)  # CHECK2 - PULL
     collect_rout_sock.setsockopt_string(zmq.IDENTITY, 'collect.ROUTER')
     collect_rout_sock.connect(port_dict['collect_push_url'])
     if VERBOSE_JOBS:
