@@ -189,7 +189,12 @@ def start_web_server(
             'threads': num_threads,
             'worker_class': 'gthread',
             'timeout': 3600,
-            'preload_app': True,
+            # preload_app MUST be False.  Gunicorn always forks at least one
+            # worker from the master process.  ZMQ contexts/sockets created
+            # before fork() (e.g. the global zmq.Context.instance() and any
+            # sockets opened during app init) become invalid in the child,
+            # causing "Assertion failed: ok (src/mailbox.cpp:99)" crashes.
+            'preload_app': False,
             'accesslog': '-',
             'errorlog': '-',
             'loglevel': 'info',
