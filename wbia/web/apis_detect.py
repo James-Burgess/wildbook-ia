@@ -601,11 +601,16 @@ def models_cnn_yolo(ibs, **kwargs):
         Method: PUT, GET
         URL:    /api/labels/cnn/yolo/
     """
-    from pydarknet._pydarknet import (
-        CONFIG_URL_DICT,
-        _parse_class_list,
-        _parse_classes_from_cfg,
-    )
+    try:
+        from pydarknet._pydarknet import (
+            CONFIG_URL_DICT,
+            _parse_class_list,
+            _parse_classes_from_cfg,
+        )
+    except ImportError:
+        raise RuntimeError(
+            'pydarknet is not installed; the /api/models/cnn/yolo/ endpoint is unavailable'
+        )
 
     model_dict = ibs.models_cnn(
         CONFIG_URL_DICT, _parse_classes_from_cfg, _parse_class_list, **kwargs

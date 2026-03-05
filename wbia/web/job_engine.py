@@ -54,6 +54,7 @@ import multiprocessing
 import random
 import re
 import shelve
+import threading
 import time
 import uuid  # NOQA
 from datetime import datetime, timedelta
@@ -832,8 +833,6 @@ def initialize_process_record(
 
 class JobInterface(object):
     def __init__(jobiface, id_, port_dict, ibs=None):
-        import threading
-
         jobiface.id_ = id_
         jobiface.ibs = ibs
         jobiface.verbose = 2 if VERBOSE_JOBS else 1
@@ -849,16 +848,24 @@ class JobInterface(object):
     def __del__(jobiface):
         if VERBOSE_JOBS:
             print('Cleaning up job frontend')
-        if jobiface.engine_recieve_socket is not None:
-            jobiface.engine_recieve_socket.disconnect(
-                jobiface.port_dict['engine_pull_url']
-            )
-            jobiface.engine_recieve_socket.close()
-        if jobiface.collect_recieve_socket is not None:
-            jobiface.collect_recieve_socket.disconnect(
-                jobiface.port_dict['collect_pull_url']
-            )
-            jobiface.collect_recieve_socket.close()
+        try:
+            with jobiface._engine_lock:
+                if getattr(jobiface, 'engine_recieve_socket', None) is not None:
+                    jobiface.engine_recieve_socket.disconnect(
+                        jobiface.port_dict['engine_pull_url']
+                    )
+                    jobiface.engine_recieve_socket.close()
+        except Exception:
+            pass
+        try:
+            with jobiface._collect_lock:
+                if getattr(jobiface, 'collect_recieve_socket', None) is not None:
+                    jobiface.collect_recieve_socket.disconnect(
+                        jobiface.port_dict['collect_pull_url']
+                    )
+                    jobiface.collect_recieve_socket.close()
+        except Exception:
+            pass
 
     # def init(jobiface):
     #     # Starts several new processes
@@ -876,6 +883,9 @@ class JobInterface(object):
         jobiface.engine_recieve_socket.setsockopt_string(
             zmq.IDENTITY, 'client{}.engine.DEALER'.format(jobiface.id_)
         )
+        # Timeout recv after 120s to prevent permanent lock starvation if
+        # the engine process dies.  Raises zmq.error.Again on timeout.
+        jobiface.engine_recieve_socket.setsockopt(zmq.RCVTIMEO, 120000)
         jobiface.engine_recieve_socket.connect(jobiface.port_dict['engine_pull_url'])
         if jobiface.verbose:
             print(
@@ -888,6 +898,7 @@ class JobInterface(object):
         jobiface.collect_recieve_socket.setsockopt_string(
             zmq.IDENTITY, 'client{}.collect.DEALER'.format(jobiface.id_)
         )
+        jobiface.collect_recieve_socket.setsockopt(zmq.RCVTIMEO, 120000)
         jobiface.collect_recieve_socket.connect(jobiface.port_dict['collect_pull_url'])
         if jobiface.verbose:
             print(

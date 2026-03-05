@@ -332,13 +332,6 @@ def compute_classifications(depc, gid_list, config=None):
         }
         thumbnail_list = depc.get_property('thumbnails', gid_list, 'img', config=config_)
         result_list = ibs.generate_thumbnail_class_list(thumbnail_list, **config)
-    elif config['classifier_algo'] in ['svm']:
-        from wbia.algo.detect.svm import classify
-
-        config_ = {'algo': 'resnet'}
-        vector_list = depc.get_property('features', gid_list, 'vector', config=config_)
-        classifier_weight_filepath = config['classifier_weight_filepath']
-        result_list = classify(vector_list, weight_filepath=classifier_weight_filepath)
     elif config['classifier_algo'] in ['densenet']:
         from wbia.algo.detect import densenet
 
@@ -661,13 +654,6 @@ def compute_classifications2(depc, gid_list, config=None):
         # depc.delete_property('thumbnails', gid_list, config=config_)
         thumbnail_list = depc.get_property('thumbnails', gid_list, 'img', config=config_)
         result_list = ibs.generate_thumbnail_class2_list(thumbnail_list, **config)
-    elif config['classifier_two_algo'] in ['rf']:
-        from wbia.algo.detect.rf import classify
-
-        config_ = {'algo': 'resnet'}
-        vector_list = depc.get_property('features', gid_list, 'vector', config=config_)
-        classifier_weight_filepath = config['classifier_weight_filepath']
-        result_list = classify(vector_list, weight_filepath=classifier_weight_filepath)
     elif config['classifier_two_algo'] in ['densenet']:
         from wbia.algo.detect import densenet
 
@@ -1118,61 +1104,6 @@ def compute_localizations_original(depc, gid_list, config=None):
         base_key_list[6] = (config['species'],)  # class == species
         detect_gen = randomforest.detect_gid_list_with_species(ibs, gid_list, **config)
     ######################################################################################
-    elif config['algo'] in ['selective-search']:
-        from wbia.algo.detect import selectivesearch
-
-        logger.info('[ibs] detecting using Selective Search')
-        matlab_command = 'selective_search'
-        detect_gen = selectivesearch.detect_gid_list(
-            ibs, gid_list, matlab_command=matlab_command, **config
-        )
-    ######################################################################################
-    elif config['algo'] in ['selective-search-rcnn']:
-        from wbia.algo.detect import selectivesearch
-
-        logger.info('[ibs] detecting using Selective Search (R-CNN)')
-        matlab_command = 'selective_search_rcnn'
-        detect_gen = selectivesearch.detect_gid_list(
-            ibs, gid_list, matlab_command=matlab_command, **config
-        )
-    ######################################################################################
-    # elif config['algo'] in ['fast-rcnn']:
-    #     from wbia.algo.detect import fasterrcnn
-    #     logger.info('[ibs] detecting using CNN Fast R-CNN')
-    #     detect_gen = fasterrcnn.detect_gid_list(ibs, gid_list, **config)
-    ######################################################################################
-    elif config['algo'] in ['faster-rcnn']:
-        from wbia.algo.detect import fasterrcnn
-
-        logger.info('[ibs] detecting using CNN Faster R-CNN')
-        detect_gen = fasterrcnn.detect_gid_list(ibs, gid_list, **config)
-    ######################################################################################
-    elif config['algo'] in ['darknet']:
-        from wbia.algo.detect import darknet
-
-        logger.info('[ibs] detecting using Darknet CNN YOLO')
-        detect_gen = darknet.detect_gid_list(ibs, gid_list, **config)
-    ######################################################################################
-    elif config['algo'] in ['ssd']:
-        from wbia.algo.detect import ssd
-
-        logger.info('[ibs] detecting using CNN SSD')
-        detect_gen = ssd.detect_gid_list(ibs, gid_list, **config)
-    # ######################################################################################
-    elif config['algo'] in ['_COMBINED']:
-        # Combined computations
-        config_dict_list = [
-            # {'algo': 'selective-search', 'config_filepath': None},                          # SS1
-            {'algo': 'darknet', 'config_filepath': 'pretrained-tiny-pascal'},  # YOLO1
-            {'algo': 'darknet', 'config_filepath': 'pretrained-v2-pascal'},  # YOLO2
-            {'algo': 'faster-rcnn', 'config_filepath': 'pretrained-zf-pascal'},  # FRCNN1
-            {'algo': 'faster-rcnn', 'config_filepath': 'pretrained-vgg-pascal'},  # FRCNN2
-            {'algo': 'ssd', 'config_filepath': 'pretrained-300-pascal'},  # SSD1
-            {'algo': 'ssd', 'config_filepath': 'pretrained-512-pascal'},  # SSD1
-            {'algo': 'ssd', 'config_filepath': 'pretrained-300-pascal-plus'},  # SSD
-            {'algo': 'ssd', 'config_filepath': 'pretrained-512-pascal-plus'},  # SSD4
-        ]
-        detect_gen = _combined(gid_list, config_dict_list)
     elif config['algo'] in ['tile_aggregation', 'tile_aggregation_quick']:
         from wbia.other.detectfuncs import general_intersection_over_union
 
@@ -2242,78 +2173,6 @@ def compute_localizations_classifications(depc, loc_id_list, config=None):
             ret_tuple = (
                 score_list,
                 class_list,
-            )
-            yield ret_tuple
-    elif config['classifier_algo'] in ['svm']:
-        from wbia.algo.detect.svm import classify
-
-        # from localizations get gids
-        config_ = {
-            'combined': True,
-            'feature2_algo': 'resnet',
-            'feature2_chip_masking': masking,
-        }
-        gid_list_ = depc.get_ancestor_rowids('localizations', loc_id_list, 'images')
-        assert len(gid_list_) == len(loc_id_list)
-
-        # Get features
-        vectors_list = depc.get_property(
-            'localizations_features', gid_list_, 'vector', config=config_
-        )
-        vectors_list_ = np.vstack(vectors_list)
-        # Get gid_list
-        shape_list = [vector_list.shape[0] for vector_list in vectors_list]
-        gids_list = [[gid_] * shape for gid_, shape in zip(gid_list_, shape_list)]
-        gid_list = ut.flatten(gids_list)
-
-        # Stack vectors and classify
-        classifier_weight_filepath = config['classifier_weight_filepath']
-        result_list = classify(
-            vectors_list_, weight_filepath=classifier_weight_filepath, verbose=True
-        )
-
-        # Group the results
-        score_dict = {}
-        class_dict = {}
-        for index, (gid, result) in enumerate(zip(gid_list, result_list)):
-            if gid not in score_dict:
-                score_dict[gid] = []
-            if gid not in class_dict:
-                class_dict[gid] = []
-            score_, class_ = result
-            score_dict[gid].append(score_)
-            class_dict[gid].append(class_)
-        assert len(gid_list_) == len(score_dict.keys())
-        assert len(gid_list_) == len(class_dict.keys())
-
-        if masking:
-            # We need to perform a difference calculation to see how much the masking
-            # caused a deviation from the un-masked image
-            config_ = dict(config)
-            key_list = ['thumbnail_cfg', 'classifier_masking']
-            for key in key_list:
-                config_.pop(key)
-            class_list_ = depc.get_property(
-                'classifier', gid_list_, 'class', config=config_
-            )
-            score_list_ = depc.get_property(
-                'classifier', gid_list_, 'score', config=config_
-            )
-        else:
-            class_list_ = [None] * len(gid_list_)
-            score_list_ = [None] * len(gid_list_)
-
-        # Return the results
-        for gid_, class_, score_ in zip(gid_list_, class_list_, score_list_):
-            score_list = score_dict[gid_]
-            class_list = class_dict[gid_]
-            if masking:
-                score_ = score_ if class_ == 'positive' else 1.0 - score_
-                score_list = score_ - np.array(score_list)
-                class_list = np.array(['positive'] * len(score_list))
-            ret_tuple = (
-                np.array(score_list),
-                np.array(class_list),
             )
             yield ret_tuple
 

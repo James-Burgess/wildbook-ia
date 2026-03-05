@@ -20,7 +20,7 @@ logger = logging.getLogger('wbia')
 try:
     try:
         from werkzeug.wsgi import DispatcherMiddleware
-    except Exception:
+    except ImportError:
         from werkzeug.middleware.dispatcher import DispatcherMiddleware
     import prometheus_client
 
@@ -56,8 +56,11 @@ def start_web_server(
     # Get Flask app
     app = controller_inject.get_flask_app()
 
-    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///api_v2.sqlite3'
-    app.config['SECRET_KEY'] = 'secret_key'
+    # Database URI for v2 API models (configurable via env var for PostgreSQL, etc.)
+    app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
+        'WBIA_SQLALCHEMY_DATABASE_URI', 'sqlite:///api_v2.sqlite3'
+    )
+    # SECRET_KEY is already set securely in controller_inject.py via os.urandom(64)
 
     app.ibs = ibs
     # Try to ascertain the socket's domain name
@@ -148,15 +151,19 @@ def start_web_server(
     logging.basicConfig(level=logging.INFO)
 
     if start_web_loop:
-        # Number of Gunicorn workers and threads, configurable via env/CLI
-        num_workers = int(os.environ.get(
-            'WBIA_WEB_WORKERS',
-            ut.get_argval('--web-workers', int, 4),
-        ))
-        num_threads = int(os.environ.get(
+        # Gunicorn concurrency configuration.
+        #
+        # IMPORTANT: workers MUST be 1 because the ZMQ job engine sockets
+        # (JobInterface) are created in the main process before Gunicorn
+        # forks.  ZMQ sockets are NOT fork-safe — inheriting them across
+        # fork() causes silent message corruption or hangs.  With 1 worker
+        # (no fork), all concurrency comes from threads, which are
+        # protected by the _engine_lock / _collect_lock in JobInterface.
+        num_workers = 1
+        num_threads = max(1, int(os.environ.get(
             'WBIA_WEB_THREADS',
-            ut.get_argval('--web-threads', int, 4),
-        ))
+            ut.get_argval('--web-threads', int, 16),
+        )))
 
         import gunicorn.app.base
 
@@ -189,7 +196,7 @@ def start_web_server(
         }
 
         logger.info(
-            '[web] Starting Gunicorn with {} workers x {} threads on port {}'.format(
+            '[web] Starting Gunicorn with {} worker x {} threads on port {}'.format(
                 num_workers, num_threads, port
             )
         )

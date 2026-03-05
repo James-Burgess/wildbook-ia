@@ -106,7 +106,7 @@ class OrigAnnotInference(object):
             [
                 ('aid1', aid_pairs.T[0]),
                 ('aid2', aid_pairs.T[1]),
-                ('p_match', truth.astype(np.float)),
+                ('p_match', truth.astype(np.float64)),
                 ('p_nomatch', 1.0 - truth),
                 ('p_notcomp', np.array([0.0] * len(aid_pairs))),
             ]
@@ -209,7 +209,7 @@ class OrigAnnotInference(object):
         if False:
             kw = dict(precision=2, max_line_width=140, suppress_small=True)
             logger.info(ut.hz_str('prob_names = ', ut.repr2((prob_names), **kw)))
-            logger.info(ut.hz_str('postcut = ', ut.repr2((postcut).astype(np.int), **kw)))
+            logger.info(ut.hz_str('postcut = ', ut.repr2((postcut).astype(np.int64), **kw)))
         matching_qaids = ut.take(qaid_list, qxs)
         matched_nids = ut.take(unique_nids, nxs)
 
