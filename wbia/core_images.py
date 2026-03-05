@@ -311,11 +311,7 @@ def compute_classifications(depc, gid_list, config=None):
         >>> results = depc.get_property('classifier', gid_list, None)
         >>> print(results)
         >>> depc = ibs.depc_image
-        >>> config = {'classifier_algo': 'svm'}
-        >>> depc.delete_property('classifier', gid_list, config=config)
-        >>> results = depc.get_property('classifier', gid_list, None, config=config)
-        >>> print(results)
-        >>> config = {'classifier_algo': 'svm', 'classifier_weight_filepath': 'localizer-zebra-10'}
+        >>> config = {'classifier_algo': 'densenet'}
         >>> depc.delete_property('classifier', gid_list, config=config)
         >>> results = depc.get_property('classifier', gid_list, None, config=config)
         >>> print(results)

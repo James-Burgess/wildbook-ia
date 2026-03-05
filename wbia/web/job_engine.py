@@ -842,28 +842,64 @@ class JobInterface(object):
         # thread-safe, so every send/recv pair must be atomic.
         jobiface._engine_lock = threading.Lock()
         jobiface._collect_lock = threading.Lock()
+        jobiface.engine_recieve_socket = None
+        jobiface.collect_recieve_socket = None
         print('JobInterface ports:')
         ut.print_dict(jobiface.port_dict)
+
+    def _engine_request(jobiface, msg):
+        """Send a message to the engine and return the reply (thread-safe)."""
+        with jobiface._engine_lock:
+            try:
+                jobiface.engine_recieve_socket.send_json(msg)
+                return jobiface.engine_recieve_socket.recv_json()
+            except zmq.error.Again:
+                raise RuntimeError(
+                    'Job engine did not respond within the timeout period. '
+                    'The engine process may have crashed or is overloaded.'
+                )
+
+    def _collect_request(jobiface, msg):
+        """Send a message to the collector and return the reply (thread-safe)."""
+        with jobiface._collect_lock:
+            try:
+                jobiface.collect_recieve_socket.send_json(msg)
+                return jobiface.collect_recieve_socket.recv_json()
+            except zmq.error.Again:
+                raise RuntimeError(
+                    'Job collector did not respond within the timeout period. '
+                    'The collector process may have crashed or is overloaded.'
+                )
 
     def __del__(jobiface):
         if VERBOSE_JOBS:
             print('Cleaning up job frontend')
+        # Best-effort cleanup — use non-blocking acquire to avoid hanging
+        # at shutdown if another thread holds the lock.
         try:
-            with jobiface._engine_lock:
-                if getattr(jobiface, 'engine_recieve_socket', None) is not None:
-                    jobiface.engine_recieve_socket.disconnect(
-                        jobiface.port_dict['engine_pull_url']
-                    )
-                    jobiface.engine_recieve_socket.close()
+            lock = getattr(jobiface, '_engine_lock', None)
+            sock = getattr(jobiface, 'engine_recieve_socket', None)
+            if sock is not None:
+                acquired = lock.acquire(blocking=False) if lock else True
+                try:
+                    sock.disconnect(jobiface.port_dict['engine_pull_url'])
+                    sock.close()
+                finally:
+                    if acquired and lock:
+                        lock.release()
         except Exception:
             pass
         try:
-            with jobiface._collect_lock:
-                if getattr(jobiface, 'collect_recieve_socket', None) is not None:
-                    jobiface.collect_recieve_socket.disconnect(
-                        jobiface.port_dict['collect_pull_url']
-                    )
-                    jobiface.collect_recieve_socket.close()
+            lock = getattr(jobiface, '_collect_lock', None)
+            sock = getattr(jobiface, 'collect_recieve_socket', None)
+            if sock is not None:
+                acquired = lock.acquire(blocking=False) if lock else True
+                try:
+                    sock.disconnect(jobiface.port_dict['collect_pull_url'])
+                    sock.close()
+                finally:
+                    if acquired and lock:
+                        lock.release()
         except Exception:
             pass
 
@@ -997,9 +1033,7 @@ class JobInterface(object):
                         'action': 'register',
                     }
                     print('Sending register: {!r}'.format(reply_notify))
-                    with jobiface._collect_lock:
-                        jobiface.collect_recieve_socket.send_json(reply_notify)
-                        reply = jobiface.collect_recieve_socket.recv_json()
+                    reply = jobiface._collect_request(reply_notify)
                     jobid_ = reply['jobid']
                     assert jobid_ == jobid
                 else:
@@ -1024,9 +1058,7 @@ class JobInterface(object):
                 '__set_jobcounter__': global_jobcounter,
             }
             print('Updating completed job counter: {!r}'.format(update_notify))
-            with jobiface._engine_lock:
-                jobiface.engine_recieve_socket.send_json(update_notify)
-                reply = jobiface.engine_recieve_socket.recv_json()
+            reply = jobiface._engine_request(update_notify)
             jobcounter_ = reply['jobcounter']
             assert jobcounter_ == global_jobcounter
 
@@ -1039,9 +1071,7 @@ class JobInterface(object):
             zipped = ut.take(zipped, index_list)
 
             for jobcounter, jobid, engine_request in tqdm.tqdm(zipped):
-                with jobiface._engine_lock:
-                    jobiface.engine_recieve_socket.send_json(engine_request)
-                    reply = jobiface.engine_recieve_socket.recv_json()
+                reply = jobiface._engine_request(engine_request)
                 jobcounter_ = reply['jobcounter']
                 jobid_ = reply['jobid']
                 assert jobcounter_ == jobcounter
@@ -1120,10 +1150,8 @@ class JobInterface(object):
         if True or jobiface.verbose >= 2:
             print('Queue job: {}'.format(ut.repr2(engine_request, truncate=True)))
 
-        # Send request to job (lock protects ZMQ socket from concurrent threads)
-        with jobiface._engine_lock:
-            jobiface.engine_recieve_socket.send_json(engine_request)
-            reply_notify = jobiface.engine_recieve_socket.recv_json()
+        # Send request to job engine
+        reply_notify = jobiface._engine_request(engine_request)
         print('reply_notify = {!r}'.format(reply_notify))
         jobid_ = reply_notify['jobid']
 
@@ -1162,55 +1190,35 @@ class JobInterface(object):
             print('----')
             print('Request list of job ids')
         pair_msg = dict(action='job_id_list')
-        # CALLS: collector_request_status
-        with jobiface._collect_lock:
-            jobiface.collect_recieve_socket.send_json(pair_msg)
-            reply = jobiface.collect_recieve_socket.recv_json()
-        return reply
+        return jobiface._collect_request(pair_msg)
 
     def get_job_status(jobiface, jobid):
         if jobiface.verbose >= 1:
             print('----')
             print('Request status of jobid={!r}'.format(jobid))
         pair_msg = dict(action='job_status', jobid=jobid)
-        # CALLS: collector_request_status
-        with jobiface._collect_lock:
-            jobiface.collect_recieve_socket.send_json(pair_msg)
-            reply = jobiface.collect_recieve_socket.recv_json()
-        return reply
+        return jobiface._collect_request(pair_msg)
 
     def get_job_status_dict(jobiface):
         if False:  # jobiface.verbose >= 1:
             print('----')
             print('Request list of job ids')
         pair_msg = dict(action='job_status_dict')
-        # CALLS: collector_request_status
-        with jobiface._collect_lock:
-            jobiface.collect_recieve_socket.send_json(pair_msg)
-            reply = jobiface.collect_recieve_socket.recv_json()
-        return reply
+        return jobiface._collect_request(pair_msg)
 
     def get_job_metadata(jobiface, jobid):
         if jobiface.verbose >= 1:
             print('----')
             print('Request metadata of jobid={!r}'.format(jobid))
         pair_msg = dict(action='job_input', jobid=jobid)
-        # CALLS: collector_request_metadata
-        with jobiface._collect_lock:
-            jobiface.collect_recieve_socket.send_json(pair_msg)
-            reply = jobiface.collect_recieve_socket.recv_json()
-        return reply
+        return jobiface._collect_request(pair_msg)
 
     def get_job_result(jobiface, jobid):
         if jobiface.verbose >= 1:
             print('----')
             print('Request result of jobid={!r}'.format(jobid))
         pair_msg = dict(action='job_result', jobid=jobid)
-        # CALLER: collector_request_result
-        with jobiface._collect_lock:
-            jobiface.collect_recieve_socket.send_json(pair_msg)
-            reply = jobiface.collect_recieve_socket.recv_json()
-        return reply
+        return jobiface._collect_request(pair_msg)
 
     def get_unpacked_result(jobiface, jobid):
         reply = jobiface.get_job_result(jobid)
