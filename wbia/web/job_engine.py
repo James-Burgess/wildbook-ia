@@ -832,10 +832,17 @@ def initialize_process_record(
 
 class JobInterface(object):
     def __init__(jobiface, id_, port_dict, ibs=None):
+        import threading
+
         jobiface.id_ = id_
         jobiface.ibs = ibs
         jobiface.verbose = 2 if VERBOSE_JOBS else 1
         jobiface.port_dict = port_dict
+        # Locks to protect ZMQ sockets from concurrent access by
+        # multiple Gunicorn/web-server threads.  ZMQ sockets are NOT
+        # thread-safe, so every send/recv pair must be atomic.
+        jobiface._engine_lock = threading.Lock()
+        jobiface._collect_lock = threading.Lock()
         print('JobInterface ports:')
         ut.print_dict(jobiface.port_dict)
 
@@ -979,8 +986,9 @@ class JobInterface(object):
                         'action': 'register',
                     }
                     print('Sending register: {!r}'.format(reply_notify))
-                    jobiface.collect_recieve_socket.send_json(reply_notify)
-                    reply = jobiface.collect_recieve_socket.recv_json()
+                    with jobiface._collect_lock:
+                        jobiface.collect_recieve_socket.send_json(reply_notify)
+                        reply = jobiface.collect_recieve_socket.recv_json()
                     jobid_ = reply['jobid']
                     assert jobid_ == jobid
                 else:
@@ -1005,8 +1013,9 @@ class JobInterface(object):
                 '__set_jobcounter__': global_jobcounter,
             }
             print('Updating completed job counter: {!r}'.format(update_notify))
-            jobiface.engine_recieve_socket.send_json(update_notify)
-            reply = jobiface.engine_recieve_socket.recv_json()
+            with jobiface._engine_lock:
+                jobiface.engine_recieve_socket.send_json(update_notify)
+                reply = jobiface.engine_recieve_socket.recv_json()
             jobcounter_ = reply['jobcounter']
             assert jobcounter_ == global_jobcounter
 
@@ -1019,8 +1028,9 @@ class JobInterface(object):
             zipped = ut.take(zipped, index_list)
 
             for jobcounter, jobid, engine_request in tqdm.tqdm(zipped):
-                jobiface.engine_recieve_socket.send_json(engine_request)
-                reply = jobiface.engine_recieve_socket.recv_json()
+                with jobiface._engine_lock:
+                    jobiface.engine_recieve_socket.send_json(engine_request)
+                    reply = jobiface.engine_recieve_socket.recv_json()
                 jobcounter_ = reply['jobcounter']
                 jobid_ = reply['jobid']
                 assert jobcounter_ == jobcounter
@@ -1099,9 +1109,10 @@ class JobInterface(object):
         if True or jobiface.verbose >= 2:
             print('Queue job: {}'.format(ut.repr2(engine_request, truncate=True)))
 
-        # Send request to job
-        jobiface.engine_recieve_socket.send_json(engine_request)
-        reply_notify = jobiface.engine_recieve_socket.recv_json()
+        # Send request to job (lock protects ZMQ socket from concurrent threads)
+        with jobiface._engine_lock:
+            jobiface.engine_recieve_socket.send_json(engine_request)
+            reply_notify = jobiface.engine_recieve_socket.recv_json()
         print('reply_notify = {!r}'.format(reply_notify))
         jobid_ = reply_notify['jobid']
 
@@ -1141,8 +1152,9 @@ class JobInterface(object):
             print('Request list of job ids')
         pair_msg = dict(action='job_id_list')
         # CALLS: collector_request_status
-        jobiface.collect_recieve_socket.send_json(pair_msg)
-        reply = jobiface.collect_recieve_socket.recv_json()
+        with jobiface._collect_lock:
+            jobiface.collect_recieve_socket.send_json(pair_msg)
+            reply = jobiface.collect_recieve_socket.recv_json()
         return reply
 
     def get_job_status(jobiface, jobid):
@@ -1151,8 +1163,9 @@ class JobInterface(object):
             print('Request status of jobid={!r}'.format(jobid))
         pair_msg = dict(action='job_status', jobid=jobid)
         # CALLS: collector_request_status
-        jobiface.collect_recieve_socket.send_json(pair_msg)
-        reply = jobiface.collect_recieve_socket.recv_json()
+        with jobiface._collect_lock:
+            jobiface.collect_recieve_socket.send_json(pair_msg)
+            reply = jobiface.collect_recieve_socket.recv_json()
         return reply
 
     def get_job_status_dict(jobiface):
@@ -1161,8 +1174,9 @@ class JobInterface(object):
             print('Request list of job ids')
         pair_msg = dict(action='job_status_dict')
         # CALLS: collector_request_status
-        jobiface.collect_recieve_socket.send_json(pair_msg)
-        reply = jobiface.collect_recieve_socket.recv_json()
+        with jobiface._collect_lock:
+            jobiface.collect_recieve_socket.send_json(pair_msg)
+            reply = jobiface.collect_recieve_socket.recv_json()
         return reply
 
     def get_job_metadata(jobiface, jobid):
@@ -1171,8 +1185,9 @@ class JobInterface(object):
             print('Request metadata of jobid={!r}'.format(jobid))
         pair_msg = dict(action='job_input', jobid=jobid)
         # CALLS: collector_request_metadata
-        jobiface.collect_recieve_socket.send_json(pair_msg)
-        reply = jobiface.collect_recieve_socket.recv_json()
+        with jobiface._collect_lock:
+            jobiface.collect_recieve_socket.send_json(pair_msg)
+            reply = jobiface.collect_recieve_socket.recv_json()
         return reply
 
     def get_job_result(jobiface, jobid):
@@ -1181,8 +1196,9 @@ class JobInterface(object):
             print('Request result of jobid={!r}'.format(jobid))
         pair_msg = dict(action='job_result', jobid=jobid)
         # CALLER: collector_request_result
-        jobiface.collect_recieve_socket.send_json(pair_msg)
-        reply = jobiface.collect_recieve_socket.recv_json()
+        with jobiface._collect_lock:
+            jobiface.collect_recieve_socket.send_json(pair_msg)
+            reply = jobiface.collect_recieve_socket.recv_json()
         return reply
 
     def get_unpacked_result(jobiface, jobid):

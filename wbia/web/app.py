@@ -1,14 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-Dependencies: flask, tornado
+Dependencies: flask, gunicorn
 """
 import logging
+import os
 import socket
 
-import tornado.httpserver
-import tornado.wsgi
 import utool as ut
-from tornado.log import access_log
 
 from wbia.control import controller_inject
 from wbia.web import apis_engine
@@ -33,202 +31,177 @@ except ImportError:
     PROMETHEUS = False
 
 
-class TimedWSGIContainer(tornado.wsgi.WSGIContainer):
-    def _log(self, status_code, request):
-        if status_code < 400:
-            log_method = access_log.info
-        elif status_code < 500:
-            log_method = access_log.warning
-        else:
-            log_method = access_log.error
-
-        timestamp = ut.timestamp()
-        request_time = 1000.0 * request.request_time()
-
-        quiet_list = [
-            '/api/test/heartbeat',
-            '/api/test/heartbeat/',
-            '/metrics',
-            '/metrics/',
-        ]
-        if status_code == 200 and request.uri in quiet_list:
-            return
-
-        log_method(
-            'WALL=%s STATUS=%s METHOD=%s URL=%s IP=%s TIME=%.2fms',
-            timestamp,
-            status_code,
-            request.method,
-            request.uri,
-            request.remote_ip,
-            request_time,
-        )
+def _quiet_heartbeat_filter(record):
+    """Filter out noisy heartbeat/metrics log lines."""
+    msg = record.getMessage()
+    quiet_paths = ['/api/test/heartbeat', '/metrics']
+    if any(path in msg for path in quiet_paths):
+        if '200' in msg or '\"200\"' in msg:
+            return False
+    return True
 
 
-def _init_api_v2():
-    pass
-
-
-def start_tornado(
+def start_web_server(
     ibs, port=None, browser=None, url_suffix=None, start_web_loop=True, fallback=True
 ):
-    """Initialize the web server"""
+    """Initialize the web server using Gunicorn (multi-worker, threaded)."""
     if browser is None:
         browser = ut.get_argflag('--browser')
     if url_suffix is None:
         url_suffix = ut.get_argval('--url', default='')
 
-    # from wbia import constants as const
-    # ibs.https = const.HTTPS
-
-    def _start_tornado(ibs_, port_):
-        # Get Flask app
-        app = controller_inject.get_flask_app()
-
-        app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///api_v2.sqlite3'
-        app.config['SECRET_KEY'] = 'secret_key'
-
-        app.ibs = ibs_
-        # Try to ascertain the socket's domain name
-        socket.setdefaulttimeout(0.1)
-        try:
-            app.server_domain = socket.gethostbyname(socket.gethostname())
-        except socket.gaierror:
-            app.server_domain = '127.0.0.1'
-        socket.setdefaulttimeout(None)
-        app.server_port = port_
-        # URL for the web instance
-        app.server_url = 'http://{}:{}'.format(app.server_domain, app.server_port)
-        logger.info('[web] Tornado server starting at {}'.format(app.server_url))
-        # Launch the web browser to view the web interface and API
-
-        # Initialize all version 2 extensions
-        from wbia.web import extensions
-
-        extensions.init_app(app)
-
-        # Initialize all version 2 modules
-        from wbia.web import modules
-
-        modules.init_app(app)
-
-        logger.info('Using route rules:')
-        for rule in app.url_map.iter_rules():
-            logger.info('\t{!r}'.format(rule))
-
-        if browser:
-            url = app.server_url + url_suffix
-            import webbrowser
-
-            logger.info('[web] opening browser with url = {!r}'.format(url))
-            webbrowser.open(url)
-
-        if PROMETHEUS:
-            # Add prometheus wsgi middleware to route /metrics requests
-            logger.info('LOADING PROMETHEUS')
-            app_ = DispatcherMiddleware(
-                app, {'/metrics': prometheus_client.make_wsgi_app()}
-            )
-            # Migrate the most essential settings
-            app_.server_port = app.server_port
-            app_.server_url = app.server_url
-            app_.ibs = app.ibs
-            app = app_
-        else:
-            logger.info('SKIPPING PROMETHEUS')
-
-        # Start the tornado web handler
-        # WSGI = Web Server Gateway Interface
-        # WSGI is Python standard described in detail in PEP 3333
-        wsgi_container = TimedWSGIContainer(app)
-
-        # # Try wrapping with newrelic performance monitoring
-        # try:
-        #     import newrelic
-        #     wsgi_container = newrelic.agent.WSGIApplicationWrapper(wsgi_container)
-        # except (ImportError, AttributeError):
-        #     pass
-
-        http_server = tornado.httpserver.HTTPServer(wsgi_container)
-
-        try:
-            http_server.listen(app.server_port)
-        except socket.error:
-            fallback_port = ut.find_open_port(app.server_port)
-            if fallback:
-                logger.info(
-                    'Port %s is unavailable, using fallback_port = %r'
-                    % (port, fallback_port)
-                )
-                start_tornado(
-                    ibs,
-                    port=fallback_port,
-                    browser=browser,
-                    url_suffix=url_suffix,
-                    start_web_loop=start_web_loop,
-                    fallback=False,
-                )
-            else:
-                raise RuntimeError(
-                    ('The specified web port %d is not available, ' 'but %d is')
-                    % (app.server_port, fallback_port)
-                )
-
-        # Add more verbose logging
-        try:
-            utool_logfile_handler = ut.util_logging.__UTOOL_ROOT_LOGGER__
-        except Exception:
-            utool_logfile_handler = None
-
-        if utool_logfile_handler is not None:
-            for handler in utool_logfile_handler.handlers:
-                if isinstance(handler, ut.CustomStreamHandler):
-                    utool_logfile_handler.removeHandler(handler)
-
-            logger_list = []
-            try:
-                logger_list += [
-                    app.logger,
-                ]
-            except AttributeError:
-                pass
-            try:
-                logger_list += [
-                    app.app.logger,
-                ]
-            except AttributeError:
-                pass
-            logger_list += [
-                # logging.getLogger(),
-                logging.getLogger('concurrent'),
-                logging.getLogger('concurrent.futures'),
-                # logging.getLogger('flask_cors.core'),
-                # logging.getLogger('flask_cors'),
-                # logging.getLogger('flask_cors.decorator'),
-                # logging.getLogger('flask_cors.extension'),
-                logging.getLogger('urllib3'),
-                logging.getLogger('requests'),
-                logging.getLogger('tornado'),
-                logging.getLogger('tornado.access'),
-                logging.getLogger('tornado.application'),
-                logging.getLogger('tornado.general'),
-                logging.getLogger('websocket'),
-                logging.getLogger('wbia'),
-            ]
-            for logger_ in logger_list:
-                logger_.setLevel(logging.INFO)
-                logger_.addHandler(utool_logfile_handler)
-
-        logging.basicConfig(level=logging.INFO)
-
-        if start_web_loop:
-            tornado.ioloop.IOLoop.instance().start()
-
-    # Get the port if unspecified
     if port is None:
         port = appf.DEFAULT_WEB_API_PORT
-    # Launch the web handler
-    _start_tornado(ibs, port)
+
+    # Get Flask app
+    app = controller_inject.get_flask_app()
+
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///api_v2.sqlite3'
+    app.config['SECRET_KEY'] = 'secret_key'
+
+    app.ibs = ibs
+    # Try to ascertain the socket's domain name
+    socket.setdefaulttimeout(0.1)
+    try:
+        app.server_domain = socket.gethostbyname(socket.gethostname())
+    except socket.gaierror:
+        app.server_domain = '127.0.0.1'
+    socket.setdefaulttimeout(None)
+    app.server_port = port
+    app.server_url = 'http://{}:{}'.format(app.server_domain, app.server_port)
+    logger.info('[web] Server starting at {}'.format(app.server_url))
+
+    # Initialize all version 2 extensions
+    from wbia.web import extensions
+
+    extensions.init_app(app)
+
+    # Initialize all version 2 modules
+    from wbia.web import modules
+
+    modules.init_app(app)
+
+    logger.info('Using route rules:')
+    for rule in app.url_map.iter_rules():
+        logger.info('\t{!r}'.format(rule))
+
+    if browser:
+        url = app.server_url + url_suffix
+        import webbrowser
+
+        logger.info('[web] opening browser with url = {!r}'.format(url))
+        webbrowser.open(url)
+
+    wsgi_app = app
+    if PROMETHEUS:
+        logger.info('LOADING PROMETHEUS')
+        wsgi_app = DispatcherMiddleware(
+            app, {'/metrics': prometheus_client.make_wsgi_app()}
+        )
+        wsgi_app.server_port = app.server_port
+        wsgi_app.server_url = app.server_url
+        wsgi_app.ibs = app.ibs
+    else:
+        logger.info('SKIPPING PROMETHEUS')
+
+    # Configure logging
+    try:
+        utool_logfile_handler = ut.util_logging.__UTOOL_ROOT_LOGGER__
+    except Exception:
+        utool_logfile_handler = None
+
+    if utool_logfile_handler is not None:
+        for handler in utool_logfile_handler.handlers:
+            if isinstance(handler, ut.CustomStreamHandler):
+                utool_logfile_handler.removeHandler(handler)
+
+        logger_list = []
+        try:
+            logger_list += [app.logger]
+        except AttributeError:
+            pass
+        try:
+            logger_list += [app.app.logger]
+        except AttributeError:
+            pass
+        logger_list += [
+            logging.getLogger('concurrent'),
+            logging.getLogger('concurrent.futures'),
+            logging.getLogger('urllib3'),
+            logging.getLogger('requests'),
+            logging.getLogger('gunicorn'),
+            logging.getLogger('gunicorn.access'),
+            logging.getLogger('gunicorn.error'),
+            logging.getLogger('websocket'),
+            logging.getLogger('wbia'),
+        ]
+        for logger_ in logger_list:
+            logger_.setLevel(logging.INFO)
+            logger_.addHandler(utool_logfile_handler)
+
+    # Suppress heartbeat/metrics noise from gunicorn access log
+    gunicorn_access_logger = logging.getLogger('gunicorn.access')
+    gunicorn_access_logger.addFilter(type(
+        '_QuietFilter', (), {'filter': staticmethod(_quiet_heartbeat_filter)}
+    )())
+
+    logging.basicConfig(level=logging.INFO)
+
+    if start_web_loop:
+        # Number of Gunicorn workers and threads, configurable via env/CLI
+        num_workers = int(os.environ.get(
+            'WBIA_WEB_WORKERS',
+            ut.get_argval('--web-workers', int, 4),
+        ))
+        num_threads = int(os.environ.get(
+            'WBIA_WEB_THREADS',
+            ut.get_argval('--web-threads', int, 4),
+        ))
+
+        import gunicorn.app.base
+
+        class WbiaGunicornApp(gunicorn.app.base.BaseApplication):
+            """Custom Gunicorn application to run the WBIA Flask app."""
+
+            def __init__(self, application, options=None):
+                self.application = application
+                self.options = options or {}
+                super().__init__()
+
+            def load_config(self):
+                for key, value in self.options.items():
+                    if key in self.cfg.settings and value is not None:
+                        self.cfg.set(key.lower(), value)
+
+            def load(self):
+                return self.application
+
+        options = {
+            'bind': '0.0.0.0:{}'.format(port),
+            'workers': num_workers,
+            'threads': num_threads,
+            'worker_class': 'gthread',
+            'timeout': 3600,
+            'preload_app': True,
+            'accesslog': '-',
+            'errorlog': '-',
+            'loglevel': 'info',
+        }
+
+        logger.info(
+            '[web] Starting Gunicorn with {} workers x {} threads on port {}'.format(
+                num_workers, num_threads, port
+            )
+        )
+
+        try:
+            WbiaGunicornApp(wsgi_app, options).run()
+        except KeyboardInterrupt:
+            logger.info('Caught ctrl+c in webserver. Gracefully exiting')
+
+
+# Keep old name as alias for compatibility
+start_tornado = start_web_server
 
 
 def start_from_wbia(
@@ -272,15 +245,12 @@ def start_from_wbia(
         logger.info('[web] opening job manager')
         ibs.load_plugin_module(job_engine)
         ibs.load_plugin_module(apis_engine)
-        # import time
-        # time.sleep(1)
         # No need to sleep, this call should block until engine is live.
         ibs.initialize_job_manager()
-        # time.sleep(10)
 
-    logger.info('[web] starting tornado')
+    logger.info('[web] starting web server')
     try:
-        start_tornado(ibs, port, browser, url_suffix, start_web_loop)
+        start_web_server(ibs, port, browser, url_suffix, start_web_loop)
     except KeyboardInterrupt:
         logger.info('Caught ctrl+c in webserver. Gracefully exiting')
     if start_web_loop:
