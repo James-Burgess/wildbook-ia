@@ -67,7 +67,6 @@ class NavbarClass(object):
             ('review', 'Review'),
             # ('view_experiments', 'Experiments'),
             ('view_jobs', 'Jobs'),
-            ('demo', 'Demo'),
             # ('api_root',  'API'),
             # ('group_review',  'Group Review'),
         ]
