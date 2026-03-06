@@ -18,7 +18,17 @@ register_api = controller_inject.get_wbia_flask_api(__name__)
 
 
 PROMETHEUS_COUNTER = 0
-PROMETHEUS_LIMIT = 1
+# How many heartbeats between expensive metric refreshes.
+# Was 1 (every heartbeat), but that causes each heartbeat to do 6 DB queries
+# + a ZMQ round-trip to the collector.  30 means ~once per minute at a
+# typical 2s health-check interval.
+PROMETHEUS_LIMIT = 30
+
+# Lock + flag to ensure only one background prometheus refresh runs at a time.
+# If a refresh is already in progress, new heartbeats skip it entirely.
+import threading as _threading
+_PROMETHEUS_BUSY = False
+_PROMETHEUS_BUSY_LOCK = _threading.Lock()
 
 
 PROMETHEUS_DATA = {
@@ -158,6 +168,7 @@ def prometheus_increment_exception(ibs, tag):
     __api_plural_check__=False,
 )
 def prometheus_update(ibs, *args, **kwargs):
+    global _PROMETHEUS_BUSY
     try:
         with ut.Timer(verbose=False) as timer:
             if ibs.containerized:
@@ -173,234 +184,237 @@ def prometheus_update(ibs, *args, **kwargs):
                 RENDER_STATUS = ibs._init_render_status()
 
             PROMETHEUS_COUNTER = PROMETHEUS_COUNTER + 1  # NOQA
-            # logger.info('PROMETHEUS LIMIT %d / %d' % (PROMETHEUS_COUNTER, PROMETHEUS_LIMIT, ))
 
             if PROMETHEUS_COUNTER >= PROMETHEUS_LIMIT:
                 PROMETHEUS_COUNTER = 0
 
+                # Skip if a previous refresh is still running — don't
+                # pile up expensive ZMQ/DB calls from concurrent heartbeats.
+                with _PROMETHEUS_BUSY_LOCK:
+                    if _PROMETHEUS_BUSY:
+                        return
+                    _PROMETHEUS_BUSY = True
                 try:
-                    PROMETHEUS_DATA['info'].info(
-                        {
-                            'uuid': str(ibs.get_db_init_uuid()),
-                            'dbname': ibs.dbname,
-                            'hostname': ut.get_computer_name(),
-                            'container': container_name,
-                            'version': ibs.db.get_db_version(),
-                            'containerized': str(int(ibs.containerized)),
-                            'production': str(int(ibs.production)),
-                        }
-                    )
-                except Exception:
-                    pass
-
-                try:
-                    if ibs.production:
-                        num_imageset_rowids = 0
-                        num_gids = 0
-                        num_aids = 0
-                        num_pids = 0
-                        num_nids = 0
-                        num_species = 0
-                    else:
-                        num_imageset_rowids = len(ibs._get_all_imageset_rowids())
-                        num_gids = len(ibs._get_all_gids())
-                        num_aids = len(ibs._get_all_aids())
-                        num_pids = len(ibs._get_all_part_rowids())
-                        num_nids = len(ibs._get_all_name_rowids())
-                        num_species = len(ibs._get_all_species_rowids())
-
-                    PROMETHEUS_DATA['imagesets'].labels(name=container_name).set(
-                        num_imageset_rowids
-                    )
-                    PROMETHEUS_DATA['images'].labels(name=container_name).set(num_gids)
-                    PROMETHEUS_DATA['annotations'].labels(name=container_name).set(
-                        num_aids
-                    )
-                    PROMETHEUS_DATA['parts'].labels(name=container_name).set(num_pids)
-                    PROMETHEUS_DATA['names'].labels(name=container_name).set(num_nids)
-                    PROMETHEUS_DATA['species'].labels(name=container_name).set(
-                        num_species
-                    )
-                except Exception:
-                    pass
-
-                try:
-                    # Limit to most recent 500 jobs to avoid fetching
-                    # tens of thousands of historical job records on
-                    # every heartbeat.  Metrics are approximate anyway.
-                    job_status_dict = ibs.get_job_status(limit=500)['json_result']
-                except Exception:
-                    job_status_dict = {}
-
-                try:
-                    job_uuid_list = list(job_status_dict.keys())
-                    status_dict_template = {
-                        'received': 0,
-                        'accepted': 0,
-                        'queued': 0,
-                        'working': 0,
-                        'publishing': 0,
-                        'completed': 0,
-                        'exception': 0,
-                        'suppressed': 0,
-                        'corrupted': 0,
-                        '_error': 0,
-                    }
-                    status_dict = {
-                        '*': status_dict_template.copy(),
-                        'max': status_dict_template.copy(),
-                    }
-
-                    endpoints = set()
-                    working_endpoint = None
-                except Exception:
-                    pass
-
-                for job_uuid in job_uuid_list:
-                    try:
-                        job_status = job_status_dict[job_uuid]
-
-                        status = job_status['status']
-                        endpoint = job_status['endpoint']
-                        jobcounter = job_status['jobcounter']
-
-                        status = '{}'.format(status)
-                        endpoint = '{}'.format(endpoint)
-
-                        if status not in status_dict_template.keys():
-                            status = '_error'
-
-                        if endpoint not in status_dict:
-                            status_dict[endpoint] = status_dict_template.copy()
-
-                        endpoints.add(endpoint)
-                    except Exception:
-                        pass
-
-                    try:
-                        if status in ['working']:
-                            from wbia.web.job_engine import (
-                                _timestamp,
-                                calculate_timedelta,
-                            )
-
-                            started = job_status['time_started']
-                            now = _timestamp()
-                            (
-                                hours,
-                                minutes,
-                                seconds,
-                                total_seconds,
-                            ) = calculate_timedelta(started, now)
-                            logger.info(
-                                'ELAPSED (%s): %d seconds...' % (job_uuid, total_seconds)
-                            )
-                            PROMETHEUS_DATA['elapsed'].labels(
-                                name=container_name, endpoint=endpoint
-                            ).set(total_seconds)
-                            PROMETHEUS_DATA['elapsed'].labels(
-                                name=container_name, endpoint='*'
-                            ).set(total_seconds)
-                            working_endpoint = endpoint
-                    except Exception:
-                        pass
-
-                    try:
-                        if status not in status_dict_template:
-                            logger.info('UNRECOGNIZED STATUS {!r}'.format(status))
-                        status_dict[endpoint][status] += 1
-                        status_dict['*'][status] += 1
-
-                        current_max = status_dict['max'][status]
-                        status_dict['max'][status] = max(current_max, jobcounter)
-
-                        if job_uuid not in PROMETHUS_JOB_CACHE_DICT:
-                            PROMETHUS_JOB_CACHE_DICT[job_uuid] = {}
-                    except Exception:
-                        pass
-
-                    try:
-                        runtime_sec = job_status.get('time_runtime_sec', None)
-                        if (
-                            runtime_sec is not None
-                            and 'runtime' not in PROMETHUS_JOB_CACHE_DICT[job_uuid]
-                        ):
-                            PROMETHUS_JOB_CACHE_DICT[job_uuid]['runtime'] = runtime_sec
-                            PROMETHEUS_DATA['runtime'].labels(
-                                name=container_name, endpoint=endpoint
-                            ).set(runtime_sec)
-                            PROMETHEUS_DATA['runtime'].labels(
-                                name=container_name, endpoint='*'
-                            ).set(runtime_sec)
-                    except Exception:
-                        pass
-
-                    try:
-                        turnaround_sec = job_status.get('time_turnaround_sec', None)
-                        if (
-                            turnaround_sec is not None
-                            and 'turnaround' not in PROMETHUS_JOB_CACHE_DICT[job_uuid]
-                        ):
-                            PROMETHUS_JOB_CACHE_DICT[job_uuid][
-                                'turnaround'
-                            ] = turnaround_sec
-                            PROMETHEUS_DATA['turnaround'].labels(
-                                name=container_name, endpoint=endpoint
-                            ).set(turnaround_sec)
-                            PROMETHEUS_DATA['turnaround'].labels(
-                                name=container_name, endpoint='*'
-                            ).set(turnaround_sec)
-                    except Exception:
-                        pass
-
-                try:
-                    if working_endpoint is None:
-                        PROMETHEUS_DATA['elapsed'].labels(
-                            name=container_name, endpoint='*'
-                        ).set(0.0)
-
-                    for endpoint in endpoints:
-                        if endpoint == working_endpoint:
-                            continue
-                        PROMETHEUS_DATA['elapsed'].labels(
-                            name=container_name, endpoint=endpoint
-                        ).set(0.0)
-                except Exception:
-                    pass
-
-                try:
-                    # logger.info(ut.repr3(status_dict))
-                    for endpoint in status_dict:
-                        for status in status_dict[endpoint]:
-                            number = status_dict[endpoint][status]
-                            PROMETHEUS_DATA['engine'].labels(
-                                status=status, name=container_name, endpoint=endpoint
-                            ).set(number)
-                except Exception:
-                    pass
-
-                try:
-                    for status in RENDER_STATUS:
-                        number = RENDER_STATUS[status]
-                        PROMETHEUS_DATA['renders'].labels(
-                            status=status, name=container_name
-                        ).set(number)
-                except Exception:
-                    pass
-
-                try:
-                    # logger.info(ut.repr3(status_dict))
-                    process_status_dict = ibs.get_process_alive_status()
-                    for process in process_status_dict:
-                        number = 0 if process_status_dict.get(process, False) else 1
-                        PROMETHEUS_DATA['process'].labels(
-                            process=process, name=container_name
-                        ).set(number)
-                except Exception:
-                    pass
+                    _prometheus_refresh(ibs, container_name)
+                finally:
+                    _PROMETHEUS_BUSY = False
         try:
             PROMETHEUS_DATA['update'].labels(name=container_name).set(timer.ellapsed)
         except Exception:
             pass
+    except Exception:
+        pass
+
+
+def _prometheus_refresh(ibs, container_name):
+    """The expensive part of prometheus — DB queries + ZMQ calls.
+
+    Separated from prometheus_update so that the heartbeat counter
+    logic stays lightweight and concurrent heartbeats don't pile up.
+    """
+    global RENDER_STATUS
+
+    try:
+        PROMETHEUS_DATA['info'].info(
+            {
+                'uuid': str(ibs.get_db_init_uuid()),
+                'dbname': ibs.dbname,
+                'hostname': ut.get_computer_name(),
+                'container': container_name,
+                'version': ibs.db.get_db_version(),
+                'containerized': str(int(ibs.containerized)),
+                'production': str(int(ibs.production)),
+            }
+        )
+    except Exception:
+        pass
+
+    try:
+        if ibs.production:
+            num_imageset_rowids = 0
+            num_gids = 0
+            num_aids = 0
+            num_pids = 0
+            num_nids = 0
+            num_species = 0
+        else:
+            num_imageset_rowids = len(ibs._get_all_imageset_rowids())
+            num_gids = len(ibs._get_all_gids())
+            num_aids = len(ibs._get_all_aids())
+            num_pids = len(ibs._get_all_part_rowids())
+            num_nids = len(ibs._get_all_name_rowids())
+            num_species = len(ibs._get_all_species_rowids())
+
+        PROMETHEUS_DATA['imagesets'].labels(name=container_name).set(
+            num_imageset_rowids
+        )
+        PROMETHEUS_DATA['images'].labels(name=container_name).set(num_gids)
+        PROMETHEUS_DATA['annotations'].labels(name=container_name).set(num_aids)
+        PROMETHEUS_DATA['parts'].labels(name=container_name).set(num_pids)
+        PROMETHEUS_DATA['names'].labels(name=container_name).set(num_nids)
+        PROMETHEUS_DATA['species'].labels(name=container_name).set(num_species)
+    except Exception:
+        pass
+
+    try:
+        # Limit to most recent 100 jobs — metrics are approximate anyway.
+        job_status_dict = ibs.get_job_status(limit=100)['json_result']
+    except Exception:
+        job_status_dict = {}
+
+    job_uuid_list = list(job_status_dict.keys())
+    status_dict_template = {
+        'received': 0,
+        'accepted': 0,
+        'queued': 0,
+        'working': 0,
+        'publishing': 0,
+        'completed': 0,
+        'exception': 0,
+        'suppressed': 0,
+        'corrupted': 0,
+        '_error': 0,
+    }
+    status_dict = {
+        '*': status_dict_template.copy(),
+        'max': status_dict_template.copy(),
+    }
+    endpoints = set()
+    working_endpoint = None
+
+    for job_uuid in job_uuid_list:
+        try:
+            job_status = job_status_dict[job_uuid]
+
+            status = '{}'.format(job_status.get('status', '_error'))
+            endpoint = '{}'.format(job_status.get('endpoint', 'None'))
+            jobcounter = job_status.get('jobcounter', -1) or -1
+
+            if status not in status_dict_template:
+                status = '_error'
+
+            if endpoint not in status_dict:
+                status_dict[endpoint] = status_dict_template.copy()
+
+            endpoints.add(endpoint)
+        except Exception:
+            continue
+
+        try:
+            if status == 'working':
+                from wbia.web.job_engine import (
+                    _timestamp,
+                    calculate_timedelta,
+                )
+
+                started = job_status.get('time_started')
+                if started is not None:
+                    now = _timestamp()
+                    (
+                        hours,
+                        minutes,
+                        seconds,
+                        total_seconds,
+                    ) = calculate_timedelta(started, now)
+                    logger.info(
+                        'ELAPSED (%s): %d seconds...' % (job_uuid, total_seconds)
+                    )
+                    PROMETHEUS_DATA['elapsed'].labels(
+                        name=container_name, endpoint=endpoint
+                    ).set(total_seconds)
+                    PROMETHEUS_DATA['elapsed'].labels(
+                        name=container_name, endpoint='*'
+                    ).set(total_seconds)
+                    working_endpoint = endpoint
+        except Exception:
+            pass
+
+        try:
+            if status not in status_dict_template:
+                logger.info('UNRECOGNIZED STATUS {!r}'.format(status))
+            status_dict[endpoint][status] += 1
+            status_dict['*'][status] += 1
+
+            current_max = status_dict['max'][status]
+            status_dict['max'][status] = max(current_max, jobcounter)
+
+            if job_uuid not in PROMETHUS_JOB_CACHE_DICT:
+                PROMETHUS_JOB_CACHE_DICT[job_uuid] = {}
+        except Exception:
+            pass
+
+        try:
+            runtime_sec = job_status.get('time_runtime_sec', None)
+            if (
+                runtime_sec is not None
+                and 'runtime' not in PROMETHUS_JOB_CACHE_DICT.get(job_uuid, {})
+            ):
+                PROMETHUS_JOB_CACHE_DICT.setdefault(job_uuid, {})['runtime'] = runtime_sec
+                PROMETHEUS_DATA['runtime'].labels(
+                    name=container_name, endpoint=endpoint
+                ).set(runtime_sec)
+                PROMETHEUS_DATA['runtime'].labels(
+                    name=container_name, endpoint='*'
+                ).set(runtime_sec)
+        except Exception:
+            pass
+
+        try:
+            turnaround_sec = job_status.get('time_turnaround_sec', None)
+            if (
+                turnaround_sec is not None
+                and 'turnaround' not in PROMETHUS_JOB_CACHE_DICT.get(job_uuid, {})
+            ):
+                PROMETHUS_JOB_CACHE_DICT.setdefault(job_uuid, {})['turnaround'] = turnaround_sec
+                PROMETHEUS_DATA['turnaround'].labels(
+                    name=container_name, endpoint=endpoint
+                ).set(turnaround_sec)
+                PROMETHEUS_DATA['turnaround'].labels(
+                    name=container_name, endpoint='*'
+                ).set(turnaround_sec)
+        except Exception:
+            pass
+
+    try:
+        if working_endpoint is None:
+            PROMETHEUS_DATA['elapsed'].labels(
+                name=container_name, endpoint='*'
+            ).set(0.0)
+
+        for endpoint in endpoints:
+            if endpoint == working_endpoint:
+                continue
+            PROMETHEUS_DATA['elapsed'].labels(
+                name=container_name, endpoint=endpoint
+            ).set(0.0)
+    except Exception:
+        pass
+
+    try:
+        for endpoint in status_dict:
+            for status in status_dict[endpoint]:
+                number = status_dict[endpoint][status]
+                PROMETHEUS_DATA['engine'].labels(
+                    status=status, name=container_name, endpoint=endpoint
+                ).set(number)
+    except Exception:
+        pass
+
+    try:
+        for status in RENDER_STATUS:
+            number = RENDER_STATUS[status]
+            PROMETHEUS_DATA['renders'].labels(
+                status=status, name=container_name
+            ).set(number)
+    except Exception:
+        pass
+
+    try:
+        process_status_dict = ibs.get_process_alive_status()
+        for process in process_status_dict:
+            number = 0 if process_status_dict.get(process, False) else 1
+            PROMETHEUS_DATA['process'].labels(
+                process=process, name=container_name
+            ).set(number)
     except Exception:
         pass

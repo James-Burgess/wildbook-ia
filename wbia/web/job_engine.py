@@ -857,18 +857,17 @@ class JobInterface(object):
         ut.print_dict(jobiface.port_dict)
 
     def _ensure_sockets(jobiface):
-        """Lazily create ZMQ sockets on first use (post-fork).
+        """Lazily create ZMQ sockets on first use (post-fork), or recreate
+        after a timeout reset destroyed one or both sockets.
 
-        Acquires both request locks during initialization to prevent a
-        collect-path thread from overwriting a live engine socket (or
-        vice versa).  The _init_lock serializes the init itself.
+        Uses _init_lock to prevent concurrent initialization.
         """
         if jobiface.engine_recieve_socket is not None and jobiface.collect_recieve_socket is not None:
             return
         with jobiface._init_lock:
             if jobiface.engine_recieve_socket is not None and jobiface.collect_recieve_socket is not None:
                 return
-            jobiface.initialize_client_thread()
+            jobiface._rebuild_sockets()
 
     def _engine_request(jobiface, msg):
         """Send a message to the engine and return the reply (thread-safe)."""
@@ -878,6 +877,13 @@ class JobInterface(object):
                 jobiface.engine_recieve_socket.send_json(msg)
                 return jobiface.engine_recieve_socket.recv_json()
             except zmq.error.Again:
+                # CRITICAL: After a timeout the DEALER socket is poisoned.
+                # The response the collector eventually sends will sit in
+                # the socket buffer.  The next recv() would pick up that
+                # stale response instead of its own, cascading misalignment
+                # to every subsequent request.  Destroy the socket so
+                # _ensure_sockets() recreates a clean one.
+                jobiface._reset_engine_socket()
                 raise RuntimeError(
                     'Job engine did not respond within the timeout period. '
                     'The engine process may have crashed or is overloaded.'
@@ -891,10 +897,31 @@ class JobInterface(object):
                 jobiface.collect_recieve_socket.send_json(msg)
                 return jobiface.collect_recieve_socket.recv_json()
             except zmq.error.Again:
+                # CRITICAL: Same DEALER socket poisoning issue as above.
+                # Destroy and let _ensure_sockets() rebuild.
+                jobiface._reset_collect_socket()
                 raise RuntimeError(
                     'Job collector did not respond within the timeout period. '
                     'The collector process may have crashed or is overloaded.'
                 )
+
+    def _reset_engine_socket(jobiface):
+        """Close and nullify the engine socket so _ensure_sockets recreates it."""
+        try:
+            if jobiface.engine_recieve_socket is not None:
+                jobiface.engine_recieve_socket.close(linger=0)
+        except Exception:
+            pass
+        jobiface.engine_recieve_socket = None
+
+    def _reset_collect_socket(jobiface):
+        """Close and nullify the collect socket so _ensure_sockets recreates it."""
+        try:
+            if jobiface.collect_recieve_socket is not None:
+                jobiface.collect_recieve_socket.close(linger=0)
+        except Exception:
+            pass
+        jobiface.collect_recieve_socket = None
 
     def __del__(jobiface):
         if VERBOSE_JOBS:
@@ -940,22 +967,49 @@ class JobInterface(object):
             zmq_ctx.term()
             jobiface._zmq_ctx = None
 
+    def _rebuild_sockets(jobiface):
+        """Recreate whichever ZMQ sockets are missing (None).
+
+        Called by _ensure_sockets after a timeout-triggered reset destroyed
+        one socket, or on first use when both are None.  Only touches the
+        socket(s) that need rebuilding; leaves the other untouched.
+        """
+        # Ensure we have a ZMQ context
+        if getattr(jobiface, '_zmq_ctx', None) is None:
+            jobiface._zmq_ctx = zmq.Context()
+
+        if jobiface.engine_recieve_socket is None:
+            jobiface.engine_recieve_socket = jobiface._zmq_ctx.socket(zmq.DEALER)
+            jobiface.engine_recieve_socket.setsockopt_string(
+                zmq.IDENTITY, 'client{}.engine.DEALER'.format(jobiface.id_)
+            )
+            jobiface.engine_recieve_socket.setsockopt(zmq.RCVTIMEO, 120000)
+            jobiface.engine_recieve_socket.setsockopt(zmq.LINGER, 0)
+            jobiface.engine_recieve_socket.connect(jobiface.port_dict['engine_pull_url'])
+
+        if jobiface.collect_recieve_socket is None:
+            jobiface.collect_recieve_socket = jobiface._zmq_ctx.socket(zmq.DEALER)
+            jobiface.collect_recieve_socket.setsockopt_string(
+                zmq.IDENTITY, 'client{}.collect.DEALER'.format(jobiface.id_)
+            )
+            jobiface.collect_recieve_socket.setsockopt(zmq.RCVTIMEO, 120000)
+            jobiface.collect_recieve_socket.setsockopt(zmq.LINGER, 0)
+            jobiface.collect_recieve_socket.connect(jobiface.port_dict['collect_pull_url'])
+
     def initialize_client_thread(jobiface):
         """
         Creates ZMQ sockets for talking to background engine/collector processes.
-        Safe to call multiple times — will create fresh sockets each time.
-        After fork(), the old context is invalid, so we always create a new one.
+        Used during startup (pre-fork) for one-time initialization tasks.
+        After fork(), _rebuild_sockets() is used instead.
         """
         if jobiface.verbose:
             print('Initializing JobInterface')
         # Create a fresh ZMQ context for this process (critical after fork)
         jobiface._zmq_ctx = zmq.Context()
-        jobiface.engine_recieve_socket = jobiface._zmq_ctx.socket(zmq.DEALER)  # CHECK2 - REQ
+        jobiface.engine_recieve_socket = jobiface._zmq_ctx.socket(zmq.DEALER)
         jobiface.engine_recieve_socket.setsockopt_string(
             zmq.IDENTITY, 'client{}.engine.DEALER'.format(jobiface.id_)
         )
-        # Timeout recv after 120s to prevent permanent lock starvation if
-        # the engine process dies.  Raises zmq.error.Again on timeout.
         jobiface.engine_recieve_socket.setsockopt(zmq.RCVTIMEO, 120000)
         jobiface.engine_recieve_socket.setsockopt(zmq.LINGER, 0)
         jobiface.engine_recieve_socket.connect(jobiface.port_dict['engine_pull_url'])
@@ -966,7 +1020,7 @@ class JobInterface(object):
                 )
             )
 
-        jobiface.collect_recieve_socket = jobiface._zmq_ctx.socket(zmq.DEALER)  # CHECK2 - REQ
+        jobiface.collect_recieve_socket = jobiface._zmq_ctx.socket(zmq.DEALER)
         jobiface.collect_recieve_socket.setsockopt_string(
             zmq.IDENTITY, 'client{}.collect.DEALER'.format(jobiface.id_)
         )
