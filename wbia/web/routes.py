@@ -1745,7 +1745,7 @@ def view_jobs(**kwargs):
     limit = request.args.get('limit', 100, type=int)
 
     try:
-        response = ibs.get_job_status()
+        response = ibs.get_job_status(limit=limit)
     except RuntimeError:
         # Job engine not responding — show empty page instead of 500 error
         response = {'status': 'ok', 'json_result': {}}
@@ -1761,9 +1761,6 @@ def view_jobs(**kwargs):
     jobnumber_list = ut.take_column(job_values, 'jobcounter')
     index_list = np.argsort(jobnumber_list)
     index_list = index_list[::-1]
-    # Only show the most recent N jobs
-    if limit > 0:
-        index_list = index_list[:limit]
     jobid_list_ = ut.take(jobid_list, index_list)
 
     for jobid in jobid_list_:

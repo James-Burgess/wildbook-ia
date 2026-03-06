@@ -301,7 +301,7 @@ def get_process_alive_status(ibs):
 @register_api(
     '/api/engine/job/status/', methods=['GET', 'POST'], __api_plural_check__=False
 )
-def get_job_status(ibs, jobid=None):
+def get_job_status(ibs, jobid=None, limit=0, **kwargs):
     """
     Web call that returns the status of a job
 
@@ -336,7 +336,7 @@ def get_job_status(ibs, jobid=None):
 
     """
     if jobid is None:
-        status = ibs.job_manager.jobiface.get_job_status_dict()
+        status = ibs.job_manager.jobiface.get_job_status_dict(limit=limit)
     else:
         status = ibs.job_manager.jobiface.get_job_status(jobid)
     return status
@@ -1034,7 +1034,7 @@ class JobInterface(object):
             num_completed, num_archived, num_suppressed, num_corrupted = 0, 0, 0, 0
 
             # Build batch of jobs to register with the collector in one message
-            batch_register = []  # list of (jobid, status)
+            batch_register = []  # list of (jobid, status, jobcounter)
 
             for values in tqdm.tqdm(values_list):
                 (
@@ -1067,7 +1067,7 @@ class JobInterface(object):
                         status = 'corrupted'
                         num_corrupted += 1
 
-                    batch_register.append((jobid, status))
+                    batch_register.append((jobid, status, jobcounter))
                 else:
                     num_restarted += 1
                     restart_jobcounter_list.append(jobcounter)
@@ -1085,8 +1085,8 @@ class JobInterface(object):
                 reply = jobiface._collect_request({
                     'action': 'register_batch',
                     'jobs': [
-                        {'jobid': jobid, 'status': status}
-                        for jobid, status in batch_register
+                        {'jobid': jid, 'status': st, 'jobcounter': jc}
+                        for jid, st, jc in batch_register
                     ],
                 })
                 assert reply.get('status') == 'ok', \
@@ -1246,11 +1246,11 @@ class JobInterface(object):
         pair_msg = dict(action='job_status', jobid=jobid)
         return jobiface._collect_request(pair_msg)
 
-    def get_job_status_dict(jobiface):
+    def get_job_status_dict(jobiface, limit=0):
         if False:  # jobiface.verbose >= 1:
             print('----')
             print('Request list of job ids')
-        pair_msg = dict(action='job_status_dict')
+        pair_msg = dict(action='job_status_dict', limit=limit)
         return jobiface._collect_request(pair_msg)
 
     def get_job_metadata(jobiface, jobid):
@@ -2147,6 +2147,9 @@ def on_collect_request(
         for job_entry in jobs:
             _jobid = job_entry['jobid']
             _status = job_entry['status']
+            _jobcounter = job_entry.get('jobcounter', -1)
+            if _jobcounter is None:
+                _jobcounter = -1
 
             shelve_input_filepath, shelve_output_filepath = get_shelve_filepaths(
                 ibs, _jobid
@@ -2165,7 +2168,7 @@ def on_collect_request(
             # job_status_dict doesn't need to hit disk for every job.
             JOB_STATUS_CACHE[_jobid] = {
                 'status': _status,
-                'jobcounter': -1,
+                'jobcounter': _jobcounter,
                 'action': None,
                 'endpoint': None,
                 'function': None,
@@ -2305,8 +2308,24 @@ def on_collect_request(
 
     elif action == 'job_status_dict':
         json_result = {}
+        request_limit = collect_request.get('limit', 0)
 
-        for jobid in collector_data:
+        # Determine which jobs to return.  When a limit is set, use cached
+        # jobcounters to pick the most recent jobs BEFORE reading shelves,
+        # so we never touch disk for jobs we won't return.
+        if request_limit > 0 and len(collector_data) > request_limit:
+            # Sort all job IDs by cached jobcounter (descending).
+            # Jobs not in cache get -2 so they sort after known jobs.
+            all_jobids = list(collector_data.keys())
+            all_jobids.sort(
+                key=lambda jid: (JOB_STATUS_CACHE.get(jid, {}).get('jobcounter') or -1),
+                reverse=True,
+            )
+            selected_jobids = all_jobids[:request_limit]
+        else:
+            selected_jobids = list(collector_data.keys())
+
+        for jobid in selected_jobids:
 
             if jobid in JOB_STATUS_CACHE:
                 job_status_data = JOB_STATUS_CACHE.get(jobid, None)
