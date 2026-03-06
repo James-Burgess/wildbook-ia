@@ -1744,11 +1744,7 @@ def view_jobs(**kwargs):
     # Limit how many jobs to display (default 100, configurable via ?limit=N)
     limit = request.args.get('limit', 100, type=int)
 
-    try:
-        response = ibs.get_job_status(limit=limit)
-    except RuntimeError:
-        # Job engine not responding — show empty page instead of 500 error
-        response = {'status': 'ok', 'json_result': {}}
+    response = ibs.get_job_status(limit=limit)
 
     if response.get('status') != 'ok':
         response = {'status': 'ok', 'json_result': {}}
