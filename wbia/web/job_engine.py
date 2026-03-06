@@ -53,13 +53,12 @@ Notes:
 import multiprocessing
 import random
 import re
-import shelve
 import threading
 import time
 import uuid  # NOQA
 from datetime import datetime, timedelta
 from functools import partial
-from os.path import abspath, basename, exists, join, splitext
+from os.path import basename, exists, join, splitext
 
 import flask
 import numpy as np
@@ -107,14 +106,8 @@ NUM_ENGINES = {
 VERBOSE_JOBS = ut.get_argflag('--verbose-jobs')
 
 
-GLOBAL_SHELVE_LOCK = multiprocessing.Lock()
-
-
 TIMESTAMP_FMTSTR = '%Y-%m-%d %H:%M:%S %Z'
 TIMESTAMP_TIMEZONE = 'US/Pacific'
-
-
-JOB_STATUS_CACHE = {}
 
 
 def update_proctitle(procname, dbname=None):
@@ -137,13 +130,6 @@ def _get_engine_job_paths(ibs):
     ut.ensuredir(shelve_path)
     record_filepath_list = list(ut.iglob(join(shelve_path, '*.pkl')))
     return record_filepath_list
-
-
-def _get_engine_lock_paths(ibs):
-    shelve_path = ibs.get_shelves_path()
-    ut.ensuredir(shelve_path)
-    lock_filepath_list = list(ut.iglob(join(shelve_path, '*.lock')))
-    return lock_filepath_list
 
 
 @register_ibs_method
@@ -217,12 +203,6 @@ def initialize_job_manager(ibs):
         ibs.job_manager.reciever.initialize_background_processes(
             dbdir=ibs.get_dbdir(), containerized=ibs.containerized
         )
-
-    # Delete any leftover locks from before
-    lock_filepath_list = _get_engine_lock_paths(ibs)
-    print('Deleting %d leftover engine locks' % (len(lock_filepath_list),))
-    for lock_filepath in lock_filepath_list:
-        ut.delete(lock_filepath)
 
     ibs.job_manager.jobiface = JobInterface(
         0, ibs.job_manager.reciever.port_dict, ibs=ibs
@@ -645,88 +625,12 @@ class JobBackend(object):
         return status_dict
 
 
-def get_shelve_lock_filepath(shelve_filepath):
-    shelve_lock_filepath = '{}.lock'.format(shelve_filepath)
-    return shelve_lock_filepath
-
-
-def touch_shelve_lock_file(shelve_filepath):
-    shelve_lock_filepath = get_shelve_lock_filepath(shelve_filepath)
-    assert not exists(shelve_lock_filepath)
-    ut.touch(shelve_lock_filepath, verbose=False)
-    assert exists(shelve_lock_filepath)
-
-
-def delete_shelve_lock_file(shelve_filepath):
-    shelve_lock_filepath = get_shelve_lock_filepath(shelve_filepath)
-    assert exists(shelve_lock_filepath)
-    ut.delete(shelve_lock_filepath, verbose=False)
-    assert not exists(shelve_lock_filepath)
-
-
-def wait_for_shelve_lock_file(shelve_filepath, timeout=600):
-    shelve_lock_filepath = get_shelve_lock_filepath(shelve_filepath)
-    start_time = time.time()
-    while exists(shelve_lock_filepath):
-        current_time = time.time()
-        elapsed = current_time - start_time
-        if elapsed >= timeout:
-            return False
-        time.sleep(1)
-        if int(elapsed) % 5 == 0:
-            print('Waiting for {:0.02f} seconds for lock so far'.format(elapsed))
-    return True
-
-
-def get_shelve_value(shelve_filepath, key):
-    if shelve_filepath in [None, 'None', 'None.lock']:
-        return None
-    wait_for_shelve_lock_file(shelve_filepath)
-    with GLOBAL_SHELVE_LOCK:
-        wait_for_shelve_lock_file(shelve_filepath)
-        touch_shelve_lock_file(shelve_filepath)
-    value = None
-    try:
-        with shelve.open(shelve_filepath, 'r') as shelf:
-            value = shelf.get(key)
-    except Exception:
-        pass
-    delete_shelve_lock_file(shelve_filepath)
-    return value
-
-
-def set_shelve_value(shelve_filepath, key, value):
-    if shelve_filepath in [None, 'None', 'None.lock']:
-        return False
-    wait_for_shelve_lock_file(shelve_filepath)
-    with GLOBAL_SHELVE_LOCK:
-        wait_for_shelve_lock_file(shelve_filepath)
-        touch_shelve_lock_file(shelve_filepath)
-    flag = False
-    try:
-        with shelve.open(shelve_filepath) as shelf:
-            shelf[key] = value
-        flag = True
-    except Exception:
-        pass
-    delete_shelve_lock_file(shelve_filepath)
-    return flag
-
-
-def get_shelve_filepaths(ibs, jobid):
-    shelve_path = ibs.get_shelves_path()
-    shelve_input_filepath = abspath(join(shelve_path, '{}.input.shelve'.format(jobid)))
-    shelve_output_filepath = abspath(join(shelve_path, '{}.output.shelve'.format(jobid)))
-    return shelve_input_filepath, shelve_output_filepath
-
-
 def initialize_process_record(
     record_filepath,
-    shelve_input_filepath,
-    shelve_output_filepath,
     shelve_path,
     shelve_archive_path,
     jobiface_id,
+    job_store=None,
 ):
     MAX_ATTEMPTS = 20
     ARCHIVE_DAYS = 3
@@ -745,7 +649,7 @@ def initialize_process_record(
     jobid = splitext(basename(record_filepath))[0]
     jobcounter = None
 
-    # Load the engine record
+    # Load the engine record (.pkl — still written by web threads for crash recovery)
     record = ut.load_cPkl(record_filepath, verbose=False)
 
     # Load the record info
@@ -757,11 +661,14 @@ def initialize_process_record(
     suppressed = attempts >= MAX_ATTEMPTS
     corrupted = engine_request is None
 
-    # Load metadata
-    metadata = get_shelve_value(shelve_input_filepath, 'metadata')
+    # Load metadata from SQLite (or None if not yet stored)
+    metadata = job_store.get_metadata(jobid) if job_store is not None else None
 
     if metadata is None:
-        print('Missing metadata...corrupted')
+        # Pre-upgrade jobs won't have SQLite rows — treat as corrupted so
+        # they get archived on next restart.  This is expected on first
+        # boot after the shelve→SQLite migration.
+        print('No SQLite metadata for %s — archiving (expected after upgrade)' % (jobid,))
         corrupted = True
 
     archived = False
@@ -797,6 +704,7 @@ def initialize_process_record(
                 color = 'brightmagenta'
                 print_ = partial(ut.colorprint, color=color)
                 print_('ARCHIVING JOB (AGE: %d SECONDS)' % (job_age,))
+                # Move .pkl (and any leftover shelve files) to archive
                 job_scr_filepath_list = list(
                     ut.iglob(join(shelve_path, '{}*'.format(jobid)))
                 )
@@ -808,6 +716,9 @@ def initialize_process_record(
                         job_scr_filepath, job_dst_filepath, overwrite=True
                     )  # ut.copy allows for overwrite, ut.move does not
                     ut.delete(job_scr_filepath)
+                # Also remove from SQLite
+                if job_store is not None:
+                    job_store.delete_job(jobid)
 
     if archived:
         # We have archived the job, don't bother registering it
@@ -823,7 +734,6 @@ def initialize_process_record(
 
             print_('RESTARTING FAILED JOB FROM RESTART (ATTEMPT %d)' % (attempts + 1,))
             print_(ut.repr3(record_filepath))
-            # print_(ut.repr3(record))
 
             times = metadata.get('times', {})
             received = times['received']
@@ -1036,6 +946,8 @@ class JobInterface(object):
     def queue_interrupted_jobs(jobiface):
         import tqdm
 
+        from wbia.web.job_store import JobStore
+
         ibs = jobiface.ibs
 
         if ibs is not None:
@@ -1044,38 +956,28 @@ class JobInterface(object):
             shelve_archive_path = '{}_ARCHIVE'.format(shelve_path)
             ut.ensuredir(shelve_archive_path)
 
+            # Open a read-only JobStore for startup recovery.
+            # The collector will open its own read-write instance.
+            job_store = JobStore(join(shelve_path, 'jobs.db'))
+
             record_filepath_list = _get_engine_job_paths(ibs)
 
             num_records = len(record_filepath_list)
             print('Reloading %d engine jobs...' % (num_records,))
 
-            shelve_input_filepath_list = []
-            shelve_output_filepath_list = []
-            for record_filepath in record_filepath_list:
-                jobid = splitext(basename(record_filepath))[0]
-                shelve_input_filepath, shelve_output_filepath = get_shelve_filepaths(
-                    ibs, jobid
-                )
-                shelve_input_filepath_list.append(shelve_input_filepath)
-                shelve_output_filepath_list.append(shelve_output_filepath)
-
             arg_iter = list(
                 zip(
                     record_filepath_list,
-                    shelve_input_filepath_list,
-                    shelve_output_filepath_list,
                     [shelve_path] * num_records,
                     [shelve_archive_path] * num_records,
                     [jobiface.id_] * num_records,
+                    [job_store] * num_records,
                 )
             )
-            if len(arg_iter) > 0:
-                values_list = ut.util_parallel.generate2(
-                    initialize_process_record, arg_iter
-                )
-                values_list = list(values_list)
-            else:
-                values_list = []
+            # Run sequentially — JobStore is not fork-safe
+            values_list = []
+            for args in arg_iter:
+                values_list.append(initialize_process_record(*args))
 
             print('Processed %d records' % (len(values_list),))
 
@@ -1153,6 +1055,14 @@ class JobInterface(object):
             print('\t %d suppressed jobs' % (num_suppressed,))
             print('\t %d corrupted jobs' % (num_corrupted,))
             print('Archived %d jobs...' % (num_archived,))
+
+            # Reclaim space from archived jobs and close the startup store
+            if num_archived > 0:
+                try:
+                    job_store.vacuum()
+                except Exception:
+                    pass
+            job_store.close()
 
             # Update the jobcounter to be up to date
             update_notify = {
@@ -1913,9 +1823,13 @@ def on_engine_request(
 
 def collector_loop(port_dict, dbdir, containerized):
     """
-    Service that stores completed algorithm results
+    Service that stores completed algorithm results.
+
+    Uses SQLite WAL-mode (via JobStore) instead of per-job shelve files.
     """
     import wbia
+
+    from wbia.web.job_store import JobStore
 
     print = partial(ut.colorprint, color='yellow')
     collect_rout_sock = _get_global_zmq_ctx().socket(zmq.ROUTER)  # CHECK2 - PULL
@@ -1930,22 +1844,16 @@ def collector_loop(port_dict, dbdir, containerized):
     shelve_path = ibs.get_shelves_path()
     ut.ensuredir(shelve_path)
 
-    collector_data = {}
+    job_store = JobStore(join(shelve_path, 'jobs.db'))
 
     try:
         while True:
-            # several callers here
-            # CALLER: collector_notify
-            # CALLER: collector_store
-            # CALLER: collector_request_status
-            # CALLER: collector_request_metadata
-            # CALLER: collector_request_result
             idents, collect_request = rcv_multipart_json(collect_rout_sock, print=print)
             try:
                 reply = on_collect_request(
                     ibs,
                     collect_request,
-                    collector_data,
+                    job_store,
                     shelve_path,
                     containerized=containerized,
                 )
@@ -1972,6 +1880,7 @@ def collector_loop(port_dict, dbdir, containerized):
     except KeyboardInterrupt:
         print('Caught ctrl+c in collector loop. Gracefully exiting')
 
+    job_store.close()
     collect_rout_sock.disconnect(port_dict['collect_push_url'])
     collect_rout_sock.close()
 
@@ -1984,19 +1893,6 @@ def _timestamp():
     now = datetime.now(timezone)
     timestamp = now.strftime(TIMESTAMP_FMTSTR)
     return timestamp
-
-
-def invalidate_global_cache(jobid):
-    global JOB_STATUS_CACHE
-    JOB_STATUS_CACHE.pop(jobid, None)
-
-
-def get_collector_shelve_filepaths(collector_data, jobid):
-    if jobid is None:
-        return None, None
-    shelve_input_filepath = collector_data.get(jobid, {}).get('input', None)
-    shelve_output_filepath = collector_data.get(jobid, {}).get('output', None)
-    return shelve_input_filepath, shelve_output_filepath
 
 
 def convert_to_date(timestamp):
@@ -2024,9 +1920,12 @@ def calculate_timedelta(start, end):
 
 
 def on_collect_request(
-    ibs, collect_request, collector_data, shelve_path, containerized=False
+    ibs, collect_request, job_store, shelve_path, containerized=False
 ):
-    """Run whenever the collector recieves a message"""
+    """Run whenever the collector receives a message.
+
+    *job_store* is a :class:`wbia.web.job_store.JobStore` (SQLite WAL).
+    """
     import requests
 
     action = collect_request.get('action', None)
@@ -2038,7 +1937,7 @@ def on_collect_request(
         'jobid': jobid,
     }
 
-    # Ensure we have a collector record for the jobid
+    # Validate jobid
     if jobid is not None:
         try:
             assert isinstance(jobid, str)
@@ -2054,228 +1953,113 @@ def on_collect_request(
             reply['status'] = 'error'
             return reply
 
-        if jobid not in collector_data:
-            collector_data[jobid] = {
-                'status': None,
-                'input': None,
-                'output': None,
-            }
-        runtime_lock_filepath = join(shelve_path, '{}.lock'.format(jobid))
-    else:
-        runtime_lock_filepath = None
-
-    args = get_collector_shelve_filepaths(collector_data, jobid)
-    collector_shelve_input_filepath, collector_shelve_output_filepath = args
-
     if jobid is not None:
         print(
             'on_collect_request action = %r, jobid = %r, status = %r'
-            % (
-                action,
-                jobid,
-                status,
-            )
+            % (action, jobid, status)
         )
 
     if action == 'notification':
-        assert None not in [jobid, runtime_lock_filepath]
+        assert jobid is not None
 
-        # received
-        # accepted
-        # queued
-        # working
-        # publishing
-        # completed
-        # exception
-        # suppressed
-        # corrupted
+        # Ensure row exists
+        job_store.ensure_job(jobid, status)
 
-        current_status = collector_data[jobid].get('status', None)
+        current_status = job_store.get_status(jobid)
         print(
             'Updating jobid = {!r} status {!r} -> {!r}'.format(
                 jobid, current_status, status
             )
         )
-        collector_data[jobid]['status'] = status
-
-        print('Notify %s' % ut.repr3(collector_data[jobid]))
-        invalidate_global_cache(jobid)
-
-        if status == 'received':
-            ut.touch(runtime_lock_filepath)
+        job_store.update_status(jobid, status)
 
         if status == 'completed':
-            if exists(runtime_lock_filepath):
-                ut.delete(runtime_lock_filepath)
-
-            # Mark the engine request as finished
+            # Mark the engine request .pkl as finished
             record_filename = '{}.pkl'.format(jobid)
             record_filepath = join(shelve_path, record_filename)
-            record = ut.load_cPkl(record_filepath, verbose=False)
-            record['completed'] = True
-            ut.save_cPkl(record_filepath, record, verbose=False)
-            record = None
+            if exists(record_filepath):
+                record = ut.load_cPkl(record_filepath, verbose=False)
+                record['completed'] = True
+                ut.save_cPkl(record_filepath, record, verbose=False)
+                record = None
 
-        # Update relevant times in the shelf
-        if collector_shelve_input_filepath is None:
-            metadata = None
-        else:
-            metadata = get_shelve_value(collector_shelve_input_filepath, 'metadata')
+        # Update times
+        times = job_store.get_times(jobid)
+        times['updated'] = _timestamp()
 
-        if metadata is not None:
-            times = metadata.get('times', {})
-            times['updated'] = _timestamp()
-
-            if status == 'working':
-                times['started'] = _timestamp()
-
-            if status == 'completed':
-                times['completed'] = _timestamp()
-
-            # Calculate runtime
-            received = times.get('received', None)
-            started = times.get('started', None)
-            completed = times.get('completed', None)
-            runtime = times.get('runtime', None)
-            turnaround = times.get('turnaround', None)
-
-            if None not in [started, completed] and runtime is None:
-                hours, minutes, seconds, total_seconds = calculate_timedelta(
-                    started, completed
-                )
-                args = (
-                    hours,
-                    minutes,
-                    seconds,
-                    total_seconds,
-                )
-                times['runtime'] = '%d hours %d min. %s sec. (total: %d sec.)' % args
-                times['runtime_sec'] = total_seconds
-
-            if None not in [received, completed] and turnaround is None:
-                hours, minutes, seconds, total_seconds = calculate_timedelta(
-                    received, completed
-                )
-                args = (
-                    hours,
-                    minutes,
-                    seconds,
-                    total_seconds,
-                )
-                times['turnaround'] = '%d hours %d min. %s sec. (total: %d sec.)' % args
-                times['turnaround_sec'] = total_seconds
-
-            metadata['times'] = times
-            set_shelve_value(collector_shelve_input_filepath, 'metadata', metadata)
-
-            metadata = None  # Release memory
-
-    elif action == 'register':
-        assert None not in [jobid]
-
-        invalidate_global_cache(jobid)
-
-        shelve_input_filepath, shelve_output_filepath = get_shelve_filepaths(ibs, jobid)
-        metadata = get_shelve_value(shelve_input_filepath, 'metadata')
-        engine_result = get_shelve_value(shelve_output_filepath, 'result')
+        if status == 'working':
+            times['started'] = _timestamp()
 
         if status == 'completed':
-            # Ensure we can read the data we expect out of a completed job
-            if None in [metadata, engine_result]:
+            times['completed'] = _timestamp()
+
+        # Calculate runtime
+        received = times.get('received', None)
+        started = times.get('started', None)
+        completed = times.get('completed', None)
+        runtime = times.get('runtime', None)
+        turnaround = times.get('turnaround', None)
+
+        if None not in [started, completed] and runtime is None:
+            hours, minutes, seconds, total_seconds = calculate_timedelta(
+                started, completed
+            )
+            times['runtime'] = '%d hours %d min. %s sec. (total: %d sec.)' % (
+                hours, minutes, seconds, total_seconds,
+            )
+            times['runtime_sec'] = total_seconds
+
+        if None not in [received, completed] and turnaround is None:
+            hours, minutes, seconds, total_seconds = calculate_timedelta(
+                received, completed
+            )
+            times['turnaround'] = '%d hours %d min. %s sec. (total: %d sec.)' % (
+                hours, minutes, seconds, total_seconds,
+            )
+            times['turnaround_sec'] = total_seconds
+
+        job_store.update_times(jobid, times)
+
+    elif action == 'register':
+        assert jobid is not None
+
+        metadata = job_store.get_metadata(jobid)
+        result = job_store.get_result(jobid)
+
+        if status == 'completed':
+            if None in [metadata, result]:
                 status = 'corrupted'
 
         _jc = metadata.get('jobcounter', -1) if metadata else -1
-        collector_data[jobid] = {
-            'status': status,
-            'jobcounter': _jc,
-            'input': shelve_input_filepath,
-            'output': shelve_output_filepath,
-        }
-        print('Register %s' % ut.repr3(collector_data[jobid]))
-
-        metadata, engine_result = None, None  # Release memory
+        job_store.register_job(jobid, status, _jc)
+        print('Register jobid=%s status=%s jobcounter=%s' % (jobid, status, _jc))
 
     elif action == 'register_batch':
-        # Batch registration: register many jobs in a single ZMQ message.
-        # This avoids thousands of individual round-trips during startup.
         jobs = collect_request.get('jobs', [])
-        num_registered = 0
-        for job_entry in jobs:
-            _jobid = job_entry['jobid']
-            _status = job_entry['status']
-            _jobcounter = job_entry.get('jobcounter', -1)
-            if _jobcounter is None:
-                _jobcounter = -1
-
-            shelve_input_filepath, shelve_output_filepath = get_shelve_filepaths(
-                ibs, _jobid
-            )
-
-            # Skip shelve reads during batch registration — the status is
-            # already determined by queue_interrupted_jobs.  Shelve data
-            # will be read lazily if/when individual job details are requested.
-            # Store jobcounter for efficient sorting in job_status_dict.
-            collector_data[_jobid] = {
-                'status': _status,
-                'jobcounter': _jobcounter,
-                'input': shelve_input_filepath,
-                'output': shelve_output_filepath,
-            }
-            # Do NOT pre-populate JOB_STATUS_CACHE — that would store
-            # entries with None for all metadata fields (times, endpoint,
-            # etc.), causing /view/jobs/ to show blank columns.  Instead,
-            # the job_status_dict handler reads shelve data lazily for
-            # the selected (limited) set of jobs and caches at that point.
-            num_registered += 1
-
-        reply['num_registered'] = num_registered
-        print('Batch registered %d jobs' % (num_registered,))
+        job_store.register_batch(jobs)
+        reply['num_registered'] = len(jobs)
+        print('Batch registered %d jobs' % (len(jobs),))
 
     elif action == 'metadata':
-        invalidate_global_cache(jobid)
-
-        # From the Engine
         metadata = collect_request.get('metadata', None)
-
-        shelve_input_filepath, shelve_output_filepath = get_shelve_filepaths(ibs, jobid)
-        collector_data[jobid]['input'] = shelve_input_filepath
-
-        set_shelve_value(shelve_input_filepath, 'metadata', metadata)
-
-        print('Stored Metadata %s' % ut.repr3(collector_data[jobid]))
-
-        metadata = None  # Release memory
+        job_store.store_metadata(jobid, metadata)
+        print('Stored Metadata for jobid=%s' % (jobid,))
+        metadata = None
 
     elif action == 'store':
-        invalidate_global_cache(jobid)
-
-        # From the Engine
         engine_result = collect_request.get('engine_result', None)
         callback_url = collect_request.get('callback_url', None)
         callback_method = collect_request.get('callback_method', None)
         callback_detailed = collect_request.get('callback_detailed', False)
 
-        # Get the engine result jobid
         jobid = engine_result.get('jobid', jobid)
-        assert jobid in collector_data
 
-        shelve_input_filepath, shelve_output_filepath = get_shelve_filepaths(ibs, jobid)
-        collector_data[jobid]['output'] = shelve_output_filepath
-
-        set_shelve_value(shelve_output_filepath, 'result', engine_result)
-
-        print('Stored Result %s' % ut.repr3(collector_data[jobid]))
+        job_store.store_result(jobid, engine_result)
+        print('Stored Result for jobid=%s' % (jobid,))
 
         engine_result = None  # Release memory
 
         if callback_url is not None:
-            # We are using localhost as the name of the houston nginx service
-            # so we need localhost to work as is, so commenting out the code
-            # below:
-            #
-            # if containerized:
-            #     callback_url = callback_url.replace('://localhost/', '://wildbook:8080/')
-
             if callback_method is None:
                 callback_method = 'POST'
 
@@ -2287,22 +2071,18 @@ def on_collect_request(
                 data_dict = {'jobid': jobid}
 
                 if callback_detailed:
-                    shelve_value = get_shelve_value(shelve_output_filepath, 'result')
-                    data_dict['status'] = shelve_value['exec_status']
-                    data_dict['json_result'] = ut.from_json(shelve_value['json_result'])
-                    shelve_value = None  # Release memory
+                    result_data = job_store.get_result(jobid)
+                    if result_data is not None:
+                        data_dict['status'] = result_data['exec_status']
+                        data_dict['json_result'] = ut.from_json(result_data['json_result'])
+                    result_data = None
 
-                args = (
-                    callback_url,
-                    callback_method,
-                    data_dict,
-                )
+                args = (callback_url, callback_method, data_dict)
                 print(
                     'Attempting job completion callback to %r\n\tHTTP Method: %r\n\tData Payload: %r'
                     % args
                 )
 
-                # Perform callback
                 if callback_method == 'POST':
                     if callback_url.startswith('houston+'):
                         response = call_houston(
@@ -2333,152 +2113,59 @@ def on_collect_request(
                 else:
                     raise RuntimeError()
 
-                # Check response
                 try:
                     text = unicode(response.text).encode('utf-8')  # NOQA
                 except Exception:
                     text = None
 
-                args = (
-                    response,
-                    text,
-                )
-                print('Callback completed...\n\tResponse: %r\n\tText: %r' % args)
+                print('Callback completed...\n\tResponse: %r\n\tText: %r' % (response, text))
             except Exception:
                 print('Callback FAILED!')
 
     elif action == 'job_status':
-        reply['jobstatus'] = collector_data.get(jobid, {}).get('status', 'unknown')
+        reply['jobstatus'] = job_store.get_status(jobid) or 'unknown'
 
     elif action == 'job_status_dict':
-        json_result = {}
         request_limit = collect_request.get('limit', 0)
-
-        # Determine which jobs to return.  When a limit is set, use the
-        # jobcounter stored in collector_data (set during batch registration
-        # or from cache) to pick the most recent jobs BEFORE reading shelves,
-        # so we never touch disk for jobs we won't return.
-        if request_limit > 0 and len(collector_data) > request_limit:
-            all_jobids = list(collector_data.keys())
-            all_jobids.sort(
-                key=lambda jid: (
-                    collector_data[jid].get('jobcounter')
-                    or JOB_STATUS_CACHE.get(jid, {}).get('jobcounter')
-                    or -1
-                ),
-                reverse=True,
-            )
-            selected_jobids = all_jobids[:request_limit]
-        else:
-            selected_jobids = list(collector_data.keys())
-
-        for jobid in selected_jobids:
-
-            if jobid in JOB_STATUS_CACHE:
-                job_status_data = JOB_STATUS_CACHE.get(jobid, None)
-            else:
-                status = collector_data[jobid]['status']
-
-                shelve_input_filepath, shelve_output_filepath = get_shelve_filepaths(
-                    ibs, jobid
-                )
-                metadata = get_shelve_value(shelve_input_filepath, 'metadata')
-
-                cache = True
-                if metadata is None:
-                    if status in ['corrupted']:
-                        status = 'corrupted'
-                    elif status in ['suppressed']:
-                        status = 'suppressed'
-                    elif status in ['completed']:
-                        status = 'corrupted'
-                    else:
-                        # status = 'pending'
-                        cache = False
-                    metadata = {
-                        'jobcounter': -1,
-                    }
-
-                times = metadata.get('times', {})
-                request = metadata.get('request', {})
-
-                # Support legacy jobs
-                if request is None:
-                    request = {}
-
-                job_status_data = {
-                    'status': status,
-                    'jobcounter': metadata.get('jobcounter', None),
-                    'action': metadata.get('action', None),
-                    'endpoint': request.get('endpoint', None),
-                    'function': request.get('function', None),
-                    'time_received': times.get('received', None),
-                    'time_started': times.get('started', None),
-                    'time_runtime': times.get('runtime', None),
-                    'time_updated': times.get('updated', None),
-                    'time_completed': times.get('completed', None),
-                    'time_turnaround': times.get('turnaround', None),
-                    'time_runtime_sec': times.get('runtime_sec', None),
-                    'time_turnaround_sec': times.get('turnaround_sec', None),
-                    'lane': metadata.get('lane', None),
-                }
-                if cache:
-                    JOB_STATUS_CACHE[jobid] = job_status_data
-
-            json_result[jobid] = job_status_data
-
-        reply['json_result'] = json_result
-
-        metadata = None  # Release memory
+        reply['json_result'] = job_store.get_job_status_dict(limit=request_limit)
 
     elif action == 'job_id_list':
-        reply['jobid_list'] = sorted(list(collector_data.keys()))
+        reply['jobid_list'] = job_store.get_job_ids()
 
     elif action == 'job_input':
-        if jobid not in collector_data:
+        if not job_store.job_exists(jobid):
             reply['status'] = 'invalid'
-            metadata = None
+            reply['json_result'] = None
         else:
-            metadata = get_shelve_value(collector_shelve_input_filepath, 'metadata')
+            metadata = job_store.get_metadata(jobid)
             if metadata is None:
                 reply['status'] = 'corrupted'
-
-        reply['json_result'] = metadata
-
-        metadata = None  # Release memory
+            reply['json_result'] = metadata
 
     elif action == 'job_result':
-        if jobid not in collector_data:
+        if not job_store.job_exists(jobid):
             reply['status'] = 'invalid'
-            result = None
+            reply['json_result'] = None
         else:
-            status = collector_data[jobid]['status']
+            status = job_store.get_status(jobid)
+            result_data = job_store.get_result(jobid)
 
-            engine_result = get_shelve_value(collector_shelve_output_filepath, 'result')
-
-            if engine_result is None:
+            if result_data is None:
                 if status in ['corrupted']:
-                    status = 'corrupted'
+                    reply['status'] = 'corrupted'
                 elif status in ['suppressed']:
-                    status = 'suppressed'
+                    reply['status'] = 'suppressed'
                 elif status in ['completed']:
-                    status = 'corrupted'
+                    reply['status'] = 'corrupted'
                 else:
-                    # status = 'pending'
-                    pass
-                reply['status'] = status
-                result = None
+                    reply['status'] = status
+                reply['json_result'] = None
             else:
-                reply['status'] = engine_result['exec_status']
+                reply['status'] = result_data['exec_status']
+                reply['json_result'] = ut.from_json(result_data['json_result'])
 
-                json_result = engine_result['json_result']
-                result = ut.from_json(json_result)
-
-        reply['json_result'] = result
-
-        engine_result = None  # Release memory
+            result_data = None
     else:
-        # Other
         print('...error unknown action={!r}'.format(action))
         reply['status'] = 'error'
 
