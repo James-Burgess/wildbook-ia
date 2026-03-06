@@ -1741,8 +1741,17 @@ def view_graphs(sync=False, **kwargs):
 def view_jobs(**kwargs):
     ibs = current_app.ibs
 
-    response = ibs.get_job_status()
-    assert response['status'] == 'ok'
+    # Limit how many jobs to display (default 100, configurable via ?limit=N)
+    limit = request.args.get('limit', 100, type=int)
+
+    try:
+        response = ibs.get_job_status()
+    except RuntimeError:
+        # Job engine not responding — show empty page instead of 500 error
+        response = {'status': 'ok', 'json_result': {}}
+
+    if response.get('status') != 'ok':
+        response = {'status': 'ok', 'json_result': {}}
 
     jobs = response['json_result']
     job_list = []
@@ -1752,6 +1761,9 @@ def view_jobs(**kwargs):
     jobnumber_list = ut.take_column(job_values, 'jobcounter')
     index_list = np.argsort(jobnumber_list)
     index_list = index_list[::-1]
+    # Only show the most recent N jobs
+    if limit > 0:
+        index_list = index_list[:limit]
     jobid_list_ = ut.take(jobid_list, index_list)
 
     for jobid in jobid_list_:

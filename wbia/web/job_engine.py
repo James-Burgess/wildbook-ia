@@ -1033,6 +1033,9 @@ class JobInterface(object):
             num_registered, num_restarted = 0, 0
             num_completed, num_archived, num_suppressed, num_corrupted = 0, 0, 0, 0
 
+            # Build batch of jobs to register with the collector in one message
+            batch_register = []  # list of (jobid, status)
+
             for values in tqdm.tqdm(values_list):
                 (
                     jobcounter,
@@ -1064,15 +1067,7 @@ class JobInterface(object):
                         status = 'corrupted'
                         num_corrupted += 1
 
-                    reply_notify = {
-                        'jobid': jobid,
-                        'status': status,
-                        'action': 'register',
-                    }
-                    print('Sending register: {!r}'.format(reply_notify))
-                    reply = jobiface._collect_request(reply_notify)
-                    jobid_ = reply['jobid']
-                    assert jobid_ == jobid
+                    batch_register.append((jobid, status))
                 else:
                     num_restarted += 1
                     restart_jobcounter_list.append(jobcounter)
@@ -1082,6 +1077,21 @@ class JobInterface(object):
                 num_registered += 1
 
             assert num_restarted == len(restart_jobcounter_list)
+
+            # Send all registrations in a single ZMQ message to avoid
+            # thousands of individual round-trips on production servers.
+            if batch_register:
+                print('Sending batch register for %d jobs...' % (len(batch_register),))
+                reply = jobiface._collect_request({
+                    'action': 'register_batch',
+                    'jobs': [
+                        {'jobid': jobid, 'status': status}
+                        for jobid, status in batch_register
+                    ],
+                })
+                assert reply.get('status') == 'ok', \
+                    'Batch register failed: {!r}'.format(reply)
+                print('Batch register complete: %d jobs registered' % (reply.get('num_registered', 0),))
 
             print('Registered %d jobs...' % (num_registered,))
             print('\t %d completed jobs' % (num_completed,))
@@ -2128,6 +2138,51 @@ def on_collect_request(
         print('Register %s' % ut.repr3(collector_data[jobid]))
 
         metadata, engine_result = None, None  # Release memory
+
+    elif action == 'register_batch':
+        # Batch registration: register many jobs in a single ZMQ message.
+        # This avoids thousands of individual round-trips during startup.
+        jobs = collect_request.get('jobs', [])
+        num_registered = 0
+        for job_entry in jobs:
+            _jobid = job_entry['jobid']
+            _status = job_entry['status']
+
+            shelve_input_filepath, shelve_output_filepath = get_shelve_filepaths(
+                ibs, _jobid
+            )
+
+            # Skip shelve reads during batch registration — the status is
+            # already determined by queue_interrupted_jobs.  Shelve data
+            # will be read lazily if/when individual job details are requested.
+            collector_data[_jobid] = {
+                'status': _status,
+                'input': shelve_input_filepath,
+                'output': shelve_output_filepath,
+            }
+
+            # Pre-populate JOB_STATUS_CACHE with minimal data so that
+            # job_status_dict doesn't need to hit disk for every job.
+            JOB_STATUS_CACHE[_jobid] = {
+                'status': _status,
+                'jobcounter': -1,
+                'action': None,
+                'endpoint': None,
+                'function': None,
+                'time_received': None,
+                'time_started': None,
+                'time_runtime': None,
+                'time_updated': None,
+                'time_completed': None,
+                'time_turnaround': None,
+                'time_runtime_sec': None,
+                'time_turnaround_sec': None,
+                'lane': None,
+            }
+            num_registered += 1
+
+        reply['num_registered'] = num_registered
+        print('Batch registered %d jobs' % (num_registered,))
 
     elif action == 'metadata':
         invalidate_global_cache(jobid)
