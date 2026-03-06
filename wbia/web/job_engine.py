@@ -2130,8 +2130,10 @@ def on_collect_request(
             if None in [metadata, engine_result]:
                 status = 'corrupted'
 
+        _jc = metadata.get('jobcounter', -1) if metadata else -1
         collector_data[jobid] = {
             'status': status,
+            'jobcounter': _jc,
             'input': shelve_input_filepath,
             'output': shelve_output_filepath,
         }
@@ -2158,30 +2160,18 @@ def on_collect_request(
             # Skip shelve reads during batch registration — the status is
             # already determined by queue_interrupted_jobs.  Shelve data
             # will be read lazily if/when individual job details are requested.
+            # Store jobcounter for efficient sorting in job_status_dict.
             collector_data[_jobid] = {
                 'status': _status,
+                'jobcounter': _jobcounter,
                 'input': shelve_input_filepath,
                 'output': shelve_output_filepath,
             }
-
-            # Pre-populate JOB_STATUS_CACHE with minimal data so that
-            # job_status_dict doesn't need to hit disk for every job.
-            JOB_STATUS_CACHE[_jobid] = {
-                'status': _status,
-                'jobcounter': _jobcounter,
-                'action': None,
-                'endpoint': None,
-                'function': None,
-                'time_received': None,
-                'time_started': None,
-                'time_runtime': None,
-                'time_updated': None,
-                'time_completed': None,
-                'time_turnaround': None,
-                'time_runtime_sec': None,
-                'time_turnaround_sec': None,
-                'lane': None,
-            }
+            # Do NOT pre-populate JOB_STATUS_CACHE — that would store
+            # entries with None for all metadata fields (times, endpoint,
+            # etc.), causing /view/jobs/ to show blank columns.  Instead,
+            # the job_status_dict handler reads shelve data lazily for
+            # the selected (limited) set of jobs and caches at that point.
             num_registered += 1
 
         reply['num_registered'] = num_registered
@@ -2310,15 +2300,18 @@ def on_collect_request(
         json_result = {}
         request_limit = collect_request.get('limit', 0)
 
-        # Determine which jobs to return.  When a limit is set, use cached
-        # jobcounters to pick the most recent jobs BEFORE reading shelves,
+        # Determine which jobs to return.  When a limit is set, use the
+        # jobcounter stored in collector_data (set during batch registration
+        # or from cache) to pick the most recent jobs BEFORE reading shelves,
         # so we never touch disk for jobs we won't return.
         if request_limit > 0 and len(collector_data) > request_limit:
-            # Sort all job IDs by cached jobcounter (descending).
-            # Jobs not in cache get -2 so they sort after known jobs.
             all_jobids = list(collector_data.keys())
             all_jobids.sort(
-                key=lambda jid: (JOB_STATUS_CACHE.get(jid, {}).get('jobcounter') or -1),
+                key=lambda jid: (
+                    collector_data[jid].get('jobcounter')
+                    or JOB_STATUS_CACHE.get(jid, {}).get('jobcounter')
+                    or -1
+                ),
                 reverse=True,
             )
             selected_jobids = all_jobids[:request_limit]

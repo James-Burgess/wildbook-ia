@@ -225,9 +225,12 @@ def prometheus_update(ibs, *args, **kwargs):
                     pass
 
                 try:
-                    job_status_dict = ibs.get_job_status()['json_result']
+                    # Limit to most recent 500 jobs to avoid fetching
+                    # tens of thousands of historical job records on
+                    # every heartbeat.  Metrics are approximate anyway.
+                    job_status_dict = ibs.get_job_status(limit=500)['json_result']
                 except Exception:
-                    pass
+                    job_status_dict = {}
 
                 try:
                     job_uuid_list = list(job_status_dict.keys())
