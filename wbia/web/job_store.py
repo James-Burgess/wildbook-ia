@@ -282,7 +282,7 @@ class JobStore:
             req = _loads(row[13])
             result[row[0]] = {
                 'status': row[2],
-                'jobcounter': row[1],
+                'jobcounter': row[1] if row[1] is not None else -1,
                 'action': row[3],
                 'endpoint': req.get('endpoint') if req else None,
                 'function': req.get('function') if req else None,
