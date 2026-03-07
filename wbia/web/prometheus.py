@@ -18,17 +18,14 @@ register_api = controller_inject.get_wbia_flask_api(__name__)
 
 
 PROMETHEUS_COUNTER = 0
-# How many heartbeats between expensive metric refreshes.
-# Was 1 (every heartbeat), but that causes each heartbeat to do 6 DB queries
-# + a ZMQ round-trip to the collector.  30 means ~once per minute at a
-# typical 2s health-check interval.
-PROMETHEUS_LIMIT = 30
+PROMETHEUS_LIMIT = 30  # kept for prometheus_update() backward compat
 
-# Lock + flag to ensure only one background prometheus refresh runs at a time.
-# If a refresh is already in progress, new heartbeats skip it entirely.
 import threading as _threading
 _PROMETHEUS_BUSY = False
 _PROMETHEUS_BUSY_LOCK = _threading.Lock()
+
+# Interval (seconds) for the standalone background refresh timer.
+_PROMETHEUS_REFRESH_INTERVAL = 60
 
 
 PROMETHEUS_DATA = {
@@ -437,3 +434,40 @@ def _prometheus_refresh(ibs, container_name):
             ).set(number)
     except Exception:
         pass
+
+
+_PROMETHEUS_TIMER = None
+
+
+def start_prometheus_timer(ibs):
+    """Start a background daemon thread that refreshes Prometheus metrics
+    every _PROMETHEUS_REFRESH_INTERVAL seconds.  Called once at app startup.
+
+    This replaces the old approach of piggybacking on /api/test/heartbeat/,
+    which caused thread-pool exhaustion when the collector was slow.
+    """
+    global _PROMETHEUS_TIMER
+
+    if _PROMETHEUS_TIMER is not None:
+        return  # already running
+
+    if ibs.containerized:
+        container_name = const.CONTAINER_NAME
+    else:
+        container_name = ibs.dbname
+
+    def _loop():
+        global RENDER_STATUS
+        while True:
+            try:
+                if RENDER_STATUS is None:
+                    RENDER_STATUS = ibs._init_render_status()
+                _prometheus_refresh(ibs, container_name)
+            except Exception:
+                pass
+            _threading.Event().wait(_PROMETHEUS_REFRESH_INTERVAL)
+
+    _PROMETHEUS_TIMER = _threading.Thread(target=_loop, daemon=True, name='prometheus-refresh')
+    _PROMETHEUS_TIMER.start()
+    logger.info('[prometheus] Background refresh timer started (interval=%ds)',
+                _PROMETHEUS_REFRESH_INTERVAL)

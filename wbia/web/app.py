@@ -104,6 +104,9 @@ def start_web_server(
         wsgi_app.server_port = app.server_port
         wsgi_app.server_url = app.server_url
         wsgi_app.ibs = app.ibs
+
+        # Start background prometheus refresh (replaces heartbeat-driven updates)
+        prometheus.start_prometheus_timer(ibs)
     else:
         logger.info('SKIPPING PROMETHEUS')
 
