@@ -188,16 +188,23 @@ def prometheus_update(ibs, *args, **kwargs):
             if PROMETHEUS_COUNTER >= PROMETHEUS_LIMIT:
                 PROMETHEUS_COUNTER = 0
 
-                # Skip if a previous refresh is still running — don't
-                # pile up expensive ZMQ/DB calls from concurrent heartbeats.
+                # Run the expensive refresh in a background thread so the
+                # heartbeat response is never blocked by ZMQ/DB calls.
+                # Skip if a previous refresh is still running.
                 with _PROMETHEUS_BUSY_LOCK:
                     if _PROMETHEUS_BUSY:
                         return
                     _PROMETHEUS_BUSY = True
-                try:
-                    _prometheus_refresh(ibs, container_name)
-                finally:
-                    _PROMETHEUS_BUSY = False
+
+                def _bg_refresh():
+                    global _PROMETHEUS_BUSY
+                    try:
+                        _prometheus_refresh(ibs, container_name)
+                    finally:
+                        _PROMETHEUS_BUSY = False
+
+                _t = _threading.Thread(target=_bg_refresh, daemon=True)
+                _t.start()
         try:
             PROMETHEUS_DATA['update'].labels(name=container_name).set(timer.ellapsed)
         except Exception:
