@@ -264,8 +264,20 @@ def _prometheus_refresh(ibs, container_name):
         pass
 
     try:
-        # Limit to most recent 100 jobs — metrics are approximate anyway.
-        job_status_dict = ibs.get_job_status(limit=100)['json_result']
+        # Read job status directly from SQLite instead of going through
+        # ZMQ to the collector — avoids blocking the single-threaded
+        # collector loop just for metrics.
+        from os.path import join as _join
+
+        from wbia.web.job_store import JobStore
+
+        _shelve_path = ibs.get_shelves_path()
+        _db_path = _join(_shelve_path, 'jobs.db')
+        _store = JobStore(_db_path)
+        try:
+            job_status_dict = _store.get_job_status_dict(limit=100)
+        finally:
+            _store.close()
     except Exception:
         job_status_dict = {}
 

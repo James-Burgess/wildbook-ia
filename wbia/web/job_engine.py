@@ -1916,14 +1916,6 @@ def collector_loop(port_dict, dbdir, containerized):
 
             idents = None
             collect_request = None
-
-            # Explicitly release Python memory
-            try:
-                import gc
-
-                gc.collect()
-            except Exception:
-                pass
     except KeyboardInterrupt:
         print('Caught ctrl+c in collector loop. Gracefully exiting')
 
@@ -2083,14 +2075,21 @@ def on_collect_request(
         job_store.update_status(jobid, status)
 
         if status == 'completed':
-            # Mark the engine request .pkl as finished
+            # Mark the engine request .pkl as finished — do it in a
+            # background thread so disk I/O doesn't block the collector.
             record_filename = '{}.pkl'.format(jobid)
             record_filepath = join(shelve_path, record_filename)
-            if exists(record_filepath):
-                record = ut.load_cPkl(record_filepath, verbose=False)
-                record['completed'] = True
-                ut.save_cPkl(record_filepath, record, verbose=False)
-                record = None
+
+            def _mark_pkl_completed(_path=record_filepath):
+                try:
+                    if exists(_path):
+                        _rec = ut.load_cPkl(_path, verbose=False)
+                        _rec['completed'] = True
+                        ut.save_cPkl(_path, _rec, verbose=False)
+                except Exception:
+                    pass
+
+            threading.Thread(target=_mark_pkl_completed, daemon=True).start()
 
         # Update times
         times = job_store.get_times(jobid)
