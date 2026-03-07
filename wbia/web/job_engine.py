@@ -607,20 +607,41 @@ class JobBackend(object):
                     assert engine.is_alive(), 'engine died too soon'
 
     def get_process_alive_status(self):
+        """Check if background processes are alive.
+
+        Uses os.kill(pid, 0) instead of proc.is_alive() because
+        is_alive() relies on waitpid(), which only works for direct
+        children.  After Gunicorn fork(), the worker process cannot
+        waitpid() on the master's children (engine, collector).
+        """
+        import os
+
+        def _pid_alive(proc):
+            try:
+                pid = proc.pid
+                if pid is None:
+                    return False
+                os.kill(pid, 0)
+                return True
+            except (ProcessLookupError, PermissionError):
+                return False
+            except Exception:
+                return False
+
         status_dict = {}
 
         if self.spawn_queue:
-            status_dict['engine_queue'] = self.engine_queue_proc.is_alive()
-            status_dict['collect_queue'] = self.collect_queue_proc.is_alive()
+            status_dict['engine_queue'] = _pid_alive(self.engine_queue_proc)
+            status_dict['collect_queue'] = _pid_alive(self.collect_queue_proc)
 
         if self.spawn_collector:
-            status_dict['collector'] = self.collect_proc.is_alive()
+            status_dict['collector'] = _pid_alive(self.collect_proc)
 
         if self.spawn_engine:
             for lane in self.engine_procs:
                 for id_, engine in enumerate(self.engine_procs[lane]):
                     engine_str = 'engine.{}.{}'.format(lane, id_)
-                    status_dict[engine_str] = engine.is_alive()
+                    status_dict[engine_str] = _pid_alive(engine)
 
         return status_dict
 

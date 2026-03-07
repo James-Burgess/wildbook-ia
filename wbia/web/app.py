@@ -156,12 +156,12 @@ def start_web_server(
     if start_web_loop:
         # Gunicorn concurrency configuration.
         #
-        # IMPORTANT: workers MUST be 1 because the ZMQ job engine sockets
-        # (JobInterface) are created in the main process before Gunicorn
-        # forks.  ZMQ sockets are NOT fork-safe — inheriting them across
-        # fork() causes silent message corruption or hangs.  With 1 worker
-        # (no fork), all concurrency comes from threads, which are
-        # protected by the _engine_lock / _collect_lock in JobInterface.
+        # IMPORTANT: workers MUST be 1.  The ibs controller, DB connections,
+        # and ZMQ job engine state are created before Gunicorn forks.  With
+        # >1 workers, each fork would inherit copies of these objects,
+        # causing socket corruption, stale DB connections, and duplicate
+        # background threads.  All concurrency comes from gthread threads,
+        # protected by _engine_lock / _collect_lock in JobInterface.
         num_workers = 1
         num_threads = max(1, int(os.environ.get(
             'WBIA_WEB_THREADS',
