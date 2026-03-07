@@ -1668,20 +1668,19 @@ def engine_loop(id_, port_dict, dbdir, containerized, lane):
     ibs = wbia.opendb(dbdir=dbdir, use_cache=False, web=False, daily_backup=False)
     update_proctitle('engine_loop.{}.{}'.format(lane, id_), dbname=ibs.dbname)
 
-    # GPU diagnostic — log once at engine startup
-    # Write to stderr and flush to ensure it reaches docker logs
-    import sys as _sys
+    # GPU diagnostic — write to file since subprocess stdout/stderr
+    # doesn't reach docker logs
     try:
         import torch as _torch
         _cuda_ok = _torch.cuda.is_available()
         _dev_count = _torch.cuda.device_count() if _cuda_ok else 0
         _dev_name = _torch.cuda.get_device_name(0) if _dev_count > 0 else 'none'
-        _sys.stderr.write('ENGINE GPU: cuda_available=%s devices=%d gpu=%s (pid=%d lane=%s)\n' % (
-            _cuda_ok, _dev_count, _dev_name, os.getpid(), lane))
-        _sys.stderr.flush()
+        _msg = 'ENGINE GPU: cuda_available=%s devices=%d gpu=%s (pid=%d lane=%s)\n' % (
+            _cuda_ok, _dev_count, _dev_name, os.getpid(), lane)
     except Exception as _ex:
-        _sys.stderr.write('ENGINE GPU: check failed: %s\n' % (_ex,))
-        _sys.stderr.flush()
+        _msg = 'ENGINE GPU: check failed: %s\n' % (_ex,)
+    with open('/tmp/engine_gpu.log', 'a') as _f:
+        _f.write(_msg)
 
     try:
         while True:
