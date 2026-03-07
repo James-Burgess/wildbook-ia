@@ -1668,6 +1668,17 @@ def engine_loop(id_, port_dict, dbdir, containerized, lane):
     ibs = wbia.opendb(dbdir=dbdir, use_cache=False, web=False, daily_backup=False)
     update_proctitle('engine_loop.{}.{}'.format(lane, id_), dbname=ibs.dbname)
 
+    # GPU diagnostic — log once at engine startup
+    try:
+        import torch as _torch
+        _cuda_ok = _torch.cuda.is_available()
+        _dev_count = _torch.cuda.device_count() if _cuda_ok else 0
+        _dev_name = _torch.cuda.get_device_name(0) if _dev_count > 0 else 'none'
+        print('ENGINE GPU: cuda_available=%s devices=%d gpu=%s (pid=%d lane=%s)' % (
+            _cuda_ok, _dev_count, _dev_name, os.getpid(), lane))
+    except Exception as _ex:
+        print('ENGINE GPU: check failed: %s' % (_ex,))
+
     try:
         while True:
             try:
