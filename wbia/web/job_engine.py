@@ -67,7 +67,7 @@ import pytz
 # if False:
 #    import os
 #    os.environ['UTOOL_NOCNN'] = 'True'
-# import logging
+import logging
 import utool as ut
 import zmq
 
@@ -75,7 +75,7 @@ from wbia.control import controller_inject
 from wbia.utils import call_houston
 
 print, rrr, profile = ut.inject2(__name__)  # NOQA
-# logger = logging.getLogger('wbia')
+logger = logging.getLogger('wbia')
 
 
 CLASS_INJECT_KEY, register_ibs_method = controller_inject.make_ibs_register_decorator(
@@ -781,39 +781,80 @@ class JobInterface(object):
 
     def _engine_request(jobiface, msg):
         """Send a message to the engine and return the reply (thread-safe)."""
+        import time as _time
+
+        action = msg.get('action', msg.get('__set_jobcounter__', 'unknown'))
         jobiface._ensure_sockets()
-        with jobiface._engine_lock:
-            try:
-                jobiface.engine_recieve_socket.send_json(msg)
-                return jobiface.engine_recieve_socket.recv_json()
-            except zmq.error.Again:
-                # CRITICAL: After a timeout the DEALER socket is poisoned.
-                # The response the collector eventually sends will sit in
-                # the socket buffer.  The next recv() would pick up that
-                # stale response instead of its own, cascading misalignment
-                # to every subsequent request.  Destroy the socket so
-                # _ensure_sockets() recreates a clean one.
-                jobiface._reset_engine_socket()
-                raise RuntimeError(
-                    'Job engine did not respond within the timeout period. '
-                    'The engine process may have crashed or is overloaded.'
-                )
+        acquired = jobiface._engine_lock.acquire(timeout=10)
+        if not acquired:
+            logger.warning('[job_engine] Engine lock contention — could not acquire '
+                           'within 10s for action=%r (thread=%s)',
+                           action, threading.current_thread().name)
+            raise RuntimeError(
+                'Could not acquire engine lock within 10s. '
+                'Another request is likely waiting on the engine.'
+            )
+        _t0 = _time.monotonic()
+        try:
+            jobiface.engine_recieve_socket.send_json(msg)
+            reply = jobiface.engine_recieve_socket.recv_json()
+            _elapsed = _time.monotonic() - _t0
+            if _elapsed > 5.0:
+                logger.warning('[job_engine] Slow engine response: %.1fs for action=%r',
+                               _elapsed, action)
+            return reply
+        except zmq.error.Again:
+            _elapsed = _time.monotonic() - _t0
+            logger.error('[job_engine] Engine TIMEOUT after %.1fs for action=%r '
+                         '(thread=%s). Resetting socket.',
+                         _elapsed, action, threading.current_thread().name)
+            jobiface._reset_engine_socket()
+            raise RuntimeError(
+                'Job engine did not respond within the timeout period. '
+                'The engine process may have crashed or is overloaded.'
+            )
+        finally:
+            jobiface._engine_lock.release()
 
     def _collect_request(jobiface, msg):
         """Send a message to the collector and return the reply (thread-safe)."""
+        import time as _time
+
+        action = msg.get('action', 'unknown')
         jobiface._ensure_sockets()
-        with jobiface._collect_lock:
-            try:
-                jobiface.collect_recieve_socket.send_json(msg)
-                return jobiface.collect_recieve_socket.recv_json()
-            except zmq.error.Again:
-                # CRITICAL: Same DEALER socket poisoning issue as above.
-                # Destroy and let _ensure_sockets() rebuild.
-                jobiface._reset_collect_socket()
-                raise RuntimeError(
-                    'Job collector did not respond within the timeout period. '
-                    'The collector process may have crashed or is overloaded.'
-                )
+        # Use a timeout on the lock so threads don't pile up behind a slow
+        # request.  If another thread is already waiting on recv_json(),
+        # fail fast rather than queueing indefinitely.
+        acquired = jobiface._collect_lock.acquire(timeout=10)
+        if not acquired:
+            logger.warning('[job_engine] Collector lock contention — could not acquire '
+                           'within 10s for action=%r (thread=%s)',
+                           action, threading.current_thread().name)
+            raise RuntimeError(
+                'Could not acquire collector lock within 10s. '
+                'Another request is likely waiting on the collector.'
+            )
+        _t0 = _time.monotonic()
+        try:
+            jobiface.collect_recieve_socket.send_json(msg)
+            reply = jobiface.collect_recieve_socket.recv_json()
+            _elapsed = _time.monotonic() - _t0
+            if _elapsed > 5.0:
+                logger.warning('[job_engine] Slow collector response: %.1fs for action=%r',
+                               _elapsed, action)
+            return reply
+        except zmq.error.Again:
+            _elapsed = _time.monotonic() - _t0
+            logger.error('[job_engine] Collector TIMEOUT after %.1fs for action=%r '
+                         '(thread=%s). Resetting socket.',
+                         _elapsed, action, threading.current_thread().name)
+            jobiface._reset_collect_socket()
+            raise RuntimeError(
+                'Job collector did not respond within the timeout period. '
+                'The collector process may have crashed or is overloaded.'
+            )
+        finally:
+            jobiface._collect_lock.release()
 
     def _reset_engine_socket(jobiface):
         """Close and nullify the engine socket so _ensure_sockets recreates it."""
@@ -893,7 +934,7 @@ class JobInterface(object):
             jobiface.engine_recieve_socket.setsockopt_string(
                 zmq.IDENTITY, 'client{}.engine.DEALER'.format(jobiface.id_)
             )
-            jobiface.engine_recieve_socket.setsockopt(zmq.RCVTIMEO, 120000)
+            jobiface.engine_recieve_socket.setsockopt(zmq.RCVTIMEO, 30000)
             jobiface.engine_recieve_socket.setsockopt(zmq.LINGER, 0)
             jobiface.engine_recieve_socket.connect(jobiface.port_dict['engine_pull_url'])
 
@@ -902,7 +943,7 @@ class JobInterface(object):
             jobiface.collect_recieve_socket.setsockopt_string(
                 zmq.IDENTITY, 'client{}.collect.DEALER'.format(jobiface.id_)
             )
-            jobiface.collect_recieve_socket.setsockopt(zmq.RCVTIMEO, 120000)
+            jobiface.collect_recieve_socket.setsockopt(zmq.RCVTIMEO, 30000)
             jobiface.collect_recieve_socket.setsockopt(zmq.LINGER, 0)
             jobiface.collect_recieve_socket.connect(jobiface.port_dict['collect_pull_url'])
 
@@ -920,7 +961,7 @@ class JobInterface(object):
         jobiface.engine_recieve_socket.setsockopt_string(
             zmq.IDENTITY, 'client{}.engine.DEALER'.format(jobiface.id_)
         )
-        jobiface.engine_recieve_socket.setsockopt(zmq.RCVTIMEO, 120000)
+        jobiface.engine_recieve_socket.setsockopt(zmq.RCVTIMEO, 30000)
         jobiface.engine_recieve_socket.setsockopt(zmq.LINGER, 0)
         jobiface.engine_recieve_socket.connect(jobiface.port_dict['engine_pull_url'])
         if jobiface.verbose:
@@ -934,7 +975,7 @@ class JobInterface(object):
         jobiface.collect_recieve_socket.setsockopt_string(
             zmq.IDENTITY, 'client{}.collect.DEALER'.format(jobiface.id_)
         )
-        jobiface.collect_recieve_socket.setsockopt(zmq.RCVTIMEO, 120000)
+        jobiface.collect_recieve_socket.setsockopt(zmq.RCVTIMEO, 30000)
         jobiface.collect_recieve_socket.setsockopt(zmq.LINGER, 0)
         jobiface.collect_recieve_socket.connect(jobiface.port_dict['collect_pull_url'])
         if jobiface.verbose:
@@ -1849,6 +1890,8 @@ def collector_loop(port_dict, dbdir, containerized):
     try:
         while True:
             idents, collect_request = rcv_multipart_json(collect_rout_sock, print=print)
+            _action = collect_request.get('action', 'unknown') if collect_request else 'unknown'
+            _t0 = time.monotonic()
             try:
                 reply = on_collect_request(
                     ibs,
@@ -1864,6 +1907,10 @@ def collector_loop(port_dict, dbdir, containerized):
                 ut.printex(ex, 'ERROR in collection')
                 print(traceback.format_exc())
                 reply = {}
+
+            _elapsed = time.monotonic() - _t0
+            if _elapsed > 2.0:
+                print('SLOW collector action=%r took %.1fs' % (_action, _elapsed))
 
             send_multipart_json(collect_rout_sock, idents, reply)
 
