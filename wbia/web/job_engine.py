@@ -1669,15 +1669,19 @@ def engine_loop(id_, port_dict, dbdir, containerized, lane):
     update_proctitle('engine_loop.{}.{}'.format(lane, id_), dbname=ibs.dbname)
 
     # GPU diagnostic — log once at engine startup
+    # Write to stderr and flush to ensure it reaches docker logs
+    import sys as _sys
     try:
         import torch as _torch
         _cuda_ok = _torch.cuda.is_available()
         _dev_count = _torch.cuda.device_count() if _cuda_ok else 0
         _dev_name = _torch.cuda.get_device_name(0) if _dev_count > 0 else 'none'
-        print('ENGINE GPU: cuda_available=%s devices=%d gpu=%s (pid=%d lane=%s)' % (
+        _sys.stderr.write('ENGINE GPU: cuda_available=%s devices=%d gpu=%s (pid=%d lane=%s)\n' % (
             _cuda_ok, _dev_count, _dev_name, os.getpid(), lane))
+        _sys.stderr.flush()
     except Exception as _ex:
-        print('ENGINE GPU: check failed: %s' % (_ex,))
+        _sys.stderr.write('ENGINE GPU: check failed: %s\n' % (_ex,))
+        _sys.stderr.flush()
 
     try:
         while True:
