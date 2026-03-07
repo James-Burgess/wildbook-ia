@@ -258,7 +258,7 @@ def _prometheus_refresh(ibs, container_name):
         PROMETHEUS_DATA['names'].labels(name=container_name).set(num_nids)
         PROMETHEUS_DATA['species'].labels(name=container_name).set(num_species)
     except Exception:
-        pass
+        logger.exception('[prometheus] Failed to update asset gauges')
 
     try:
         # Read job status directly from SQLite instead of going through
@@ -276,6 +276,7 @@ def _prometheus_refresh(ibs, container_name):
         finally:
             _store.close()
     except Exception:
+        logger.exception('[prometheus] Failed to read job status from SQLite')
         job_status_dict = {}
 
     job_uuid_list = list(job_status_dict.keys())
@@ -414,7 +415,7 @@ def _prometheus_refresh(ibs, container_name):
                     status=status, name=container_name, endpoint=endpoint
                 ).set(number)
     except Exception:
-        pass
+        logger.exception('[prometheus] Failed to update engine job gauges')
 
     try:
         for status in RENDER_STATUS:
@@ -433,7 +434,7 @@ def _prometheus_refresh(ibs, container_name):
                 process=process, name=container_name
             ).set(number)
     except Exception:
-        pass
+        logger.exception('[prometheus] Failed to update process status gauges')
 
 
 _PROMETHEUS_TIMER = None
@@ -464,7 +465,7 @@ def start_prometheus_timer(ibs):
                     RENDER_STATUS = ibs._init_render_status()
                 _prometheus_refresh(ibs, container_name)
             except Exception:
-                pass
+                logger.exception('[prometheus] Background refresh failed')
             _threading.Event().wait(_PROMETHEUS_REFRESH_INTERVAL)
 
     _PROMETHEUS_TIMER = _threading.Thread(target=_loop, daemon=True, name='prometheus-refresh')

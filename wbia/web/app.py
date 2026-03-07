@@ -105,8 +105,8 @@ def start_web_server(
         wsgi_app.server_url = app.server_url
         wsgi_app.ibs = app.ibs
 
-        # Start background prometheus refresh (replaces heartbeat-driven updates)
-        prometheus.start_prometheus_timer(ibs)
+        # Prometheus timer is started in the post_fork hook (see below)
+        # so it runs in the worker process, not the master.
     else:
         logger.info('SKIPPING PROMETHEUS')
 
@@ -186,6 +186,12 @@ def start_web_server(
             def load(self):
                 return self.application
 
+        # Start Prometheus timer in the worker process (post-fork) so
+        # gauge updates happen in the same process that serves /metrics.
+        def _post_fork(server, worker):
+            if PROMETHEUS:
+                prometheus.start_prometheus_timer(ibs)
+
         options = {
             'bind': '0.0.0.0:{}'.format(port),
             'workers': num_workers,
@@ -198,6 +204,7 @@ def start_web_server(
             # sockets opened during app init) become invalid in the child,
             # causing "Assertion failed: ok (src/mailbox.cpp:99)" crashes.
             'preload_app': False,
+            'post_fork': _post_fork,
             'accesslog': '-',
             'errorlog': '-',
             'loglevel': 'info',
