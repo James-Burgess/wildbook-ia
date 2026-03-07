@@ -1888,6 +1888,68 @@ def collector_loop(port_dict, dbdir, containerized):
         print('Exiting collector')
 
 
+def _fire_callback(callback_url, callback_method, data_dict, print=print):
+    """Send a job-completion callback in a daemon thread.
+
+    Runs the HTTP request off the collector's main loop so that slow or
+    unreachable callback targets never block ZMQ message processing.
+    """
+    _CB_TIMEOUT = (10, 30)  # (connect, read) seconds
+
+    def _do_callback():
+        try:
+            args = (callback_url, callback_method, data_dict)
+            print(
+                'Attempting job completion callback to %r\n\tHTTP Method: %r\n\tData Payload: %r'
+                % args
+            )
+
+            if callback_method == 'POST':
+                if callback_url.startswith('houston+'):
+                    response = call_houston(
+                        callback_url,
+                        method='POST',
+                        data=ut.to_json(data_dict),
+                        headers={'Content-Type': 'application/json'},
+                        timeout=_CB_TIMEOUT,
+                    )
+                else:
+                    response = requests.post(callback_url, data=data_dict, timeout=_CB_TIMEOUT)
+            elif callback_method == 'GET':
+                if callback_url.startswith('houston+'):
+                    response = call_houston(
+                        callback_url, method='GET', params=data_dict,
+                        timeout=_CB_TIMEOUT,
+                    )
+                else:
+                    response = requests.get(callback_url, params=data_dict, timeout=_CB_TIMEOUT)
+            elif callback_method == 'PUT':
+                if callback_url.startswith('houston+'):
+                    response = call_houston(
+                        callback_url,
+                        method='PUT',
+                        data=ut.to_json(data_dict),
+                        headers={'Content-Type': 'application/json'},
+                        timeout=_CB_TIMEOUT,
+                    )
+                else:
+                    response = requests.put(callback_url, data=data_dict, timeout=_CB_TIMEOUT)
+            else:
+                raise RuntimeError('Unsupported callback method: {!r}'.format(callback_method))
+
+            try:
+                text = unicode(response.text).encode('utf-8')  # NOQA
+            except Exception:
+                text = None
+
+            print('Callback completed...\n\tResponse: %r\n\tText: %r' % (response, text))
+        except Exception:
+            print('Callback FAILED!')
+
+    t = threading.Thread(target=_do_callback, daemon=True)
+    t.start()
+
+
 def _timestamp():
     timezone = pytz.timezone(TIMESTAMP_TIMEZONE)
     now = datetime.now(timezone)
@@ -2067,60 +2129,19 @@ def on_collect_request(
             message = 'callback_method {!r} unsupported'.format(callback_method)
             assert callback_method in ['POST', 'GET', 'PUT'], message
 
-            try:
-                data_dict = {'jobid': jobid}
+            # Build the callback payload on the collector thread (needs
+            # job_store access), then fire the HTTP request in a daemon
+            # thread so the collector loop is never blocked by network I/O.
+            data_dict = {'jobid': jobid}
 
-                if callback_detailed:
-                    result_data = job_store.get_result(jobid)
-                    if result_data is not None:
-                        data_dict['status'] = result_data['exec_status']
-                        data_dict['json_result'] = ut.from_json(result_data['json_result'])
-                    result_data = None
+            if callback_detailed:
+                result_data = job_store.get_result(jobid)
+                if result_data is not None:
+                    data_dict['status'] = result_data['exec_status']
+                    data_dict['json_result'] = ut.from_json(result_data['json_result'])
+                result_data = None
 
-                args = (callback_url, callback_method, data_dict)
-                print(
-                    'Attempting job completion callback to %r\n\tHTTP Method: %r\n\tData Payload: %r'
-                    % args
-                )
-
-                if callback_method == 'POST':
-                    if callback_url.startswith('houston+'):
-                        response = call_houston(
-                            callback_url,
-                            method='POST',
-                            data=ut.to_json(data_dict),
-                            headers={'Content-Type': 'application/json'},
-                        )
-                    else:
-                        response = requests.post(callback_url, data=data_dict)
-                elif callback_method == 'GET':
-                    if callback_url.startswith('houston+'):
-                        response = call_houston(
-                            callback_url, method='GET', params=data_dict
-                        )
-                    else:
-                        response = requests.get(callback_url, params=data_dict)
-                elif callback_method == 'PUT':
-                    if callback_url.startswith('houston+'):
-                        response = call_houston(
-                            callback_url,
-                            method='PUT',
-                            data=ut.to_json(data_dict),
-                            headers={'Content-Type': 'application/json'},
-                        )
-                    else:
-                        response = requests.put(callback_url, data=data_dict)
-                else:
-                    raise RuntimeError()
-
-                try:
-                    text = unicode(response.text).encode('utf-8')  # NOQA
-                except Exception:
-                    text = None
-
-                print('Callback completed...\n\tResponse: %r\n\tText: %r' % (response, text))
-            except Exception:
-                print('Callback FAILED!')
+            _fire_callback(callback_url, callback_method, data_dict, print)
 
     elif action == 'job_status':
         reply['jobstatus'] = job_store.get_status(jobid) or 'unknown'
