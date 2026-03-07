@@ -1675,8 +1675,9 @@ def engine_loop(id_, port_dict, dbdir, containerized, lane):
         _cuda_ok = _torch.cuda.is_available()
         _dev_count = _torch.cuda.device_count() if _cuda_ok else 0
         _dev_name = _torch.cuda.get_device_name(0) if _dev_count > 0 else 'none'
+        import os as _os
         _msg = 'ENGINE GPU: cuda_available=%s devices=%d gpu=%s (pid=%d lane=%s)\n' % (
-            _cuda_ok, _dev_count, _dev_name, os.getpid(), lane)
+            _cuda_ok, _dev_count, _dev_name, _os.getpid(), lane)
     except Exception as _ex:
         _msg = 'ENGINE GPU: check failed: %s\n' % (_ex,)
     with open('/tmp/engine_gpu.log', 'a') as _f:
