@@ -1954,14 +1954,17 @@ def _fire_callback(callback_url, callback_method, data_dict, print=print):
     Runs the HTTP request off the collector's main loop so that slow or
     unreachable callback targets never block ZMQ message processing.
     """
+    import requests
+
     _CB_TIMEOUT = (10, 30)  # (connect, read) seconds
+
+    jobid = data_dict.get('jobid', '?')
 
     def _do_callback():
         try:
-            args = (callback_url, callback_method, data_dict)
             print(
-                'Attempting job completion callback to %r\n\tHTTP Method: %r\n\tData Payload: %r'
-                % args
+                'Attempting callback for jobid=%s to %r via %s'
+                % (jobid, callback_url, callback_method)
             )
 
             if callback_method == 'POST':
@@ -1997,14 +2000,25 @@ def _fire_callback(callback_url, callback_method, data_dict, print=print):
             else:
                 raise RuntimeError('Unsupported callback method: {!r}'.format(callback_method))
 
-            try:
-                text = unicode(response.text).encode('utf-8')  # NOQA
-            except Exception:
-                text = None
-
-            print('Callback completed...\n\tResponse: %r\n\tText: %r' % (response, text))
-        except Exception:
-            print('Callback FAILED!')
+            status_code = getattr(response, 'status_code', None)
+            print(
+                'Callback completed for jobid=%s — HTTP %s' % (jobid, status_code)
+            )
+            if status_code is not None and status_code >= 400:
+                try:
+                    body = response.text[:500]
+                except Exception:
+                    body = '(unreadable)'
+                print(
+                    'Callback WARNING for jobid=%s: HTTP %s — %s'
+                    % (jobid, status_code, body)
+                )
+        except Exception as ex:
+            import traceback
+            print(
+                'Callback FAILED for jobid=%s to %r: %s\n%s'
+                % (jobid, callback_url, ex, traceback.format_exc())
+            )
 
     t = threading.Thread(target=_do_callback, daemon=True)
     t.start()
@@ -2048,8 +2062,6 @@ def on_collect_request(
 
     *job_store* is a :class:`wbia.web.job_store.JobStore` (SQLite WAL).
     """
-    import requests
-
     action = collect_request.get('action', None)
     jobid = collect_request.get('jobid', None)
     status = collect_request.get('status', None)
