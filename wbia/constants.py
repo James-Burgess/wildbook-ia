@@ -6,6 +6,7 @@ string name changes)
 """
 import logging
 import math
+import os
 from collections import OrderedDict
 from os.path import join
 
@@ -34,39 +35,29 @@ SENTRY_SKIP_TRANSACTION_PATHS = {
     '/api/test/heartbeat/',
 }
 
-try:
-    import sentry_sdk
-    from sentry_sdk.integrations.flask import FlaskIntegration
-except ImportError:
-    pass
-else:
+# Sentry is opt-in via the WBIA_SENTRY_DSN environment variable.
+# Set it to a DSN string to enable error/performance tracking.
+_SENTRY_DSN = os.environ.get('WBIA_SENTRY_DSN', None)
 
-    def sentry_traces_sampler(sampling_context):
-        # Examine provided context data (including parent decision, if any)
-        # along with anything in the global namespace to compute the sample rate
-        # or sampling decision for this transaction
-        path = sampling_context.get('wsgi_environ', {}).get('PATH_INFO', None)
+if _SENTRY_DSN:
+    try:
+        import sentry_sdk
+        from sentry_sdk.integrations.flask import FlaskIntegration
 
-        if path in SENTRY_SKIP_TRANSACTION_PATHS:
-            # These aren't worth tracking - drop all transactions
-            return 0.0
-        else:
-            # everything else - allow all transactions
+        def sentry_traces_sampler(sampling_context):
+            path = sampling_context.get('wsgi_environ', {}).get('PATH_INFO', None)
+            if path in SENTRY_SKIP_TRANSACTION_PATHS:
+                return 0.0
             return 1.0
 
-    try:
-        # sentry_dsn = app.config.get('WBIA_SENTRY_DSN', None)
-        sentry_dsn = 'https://a36fa98a60ea42df8fa25e8fa680a72d@sentry.dyn.wildme.io/2'
-        if sentry_dsn is not None and isinstance(sentry_dsn, str) and len(sentry_dsn) > 0:
-            sentry_sdk.init(
-                sentry_dsn,
-                # traces_sample_rate=1.0,
-                traces_sampler=sentry_traces_sampler,
-                integrations=[FlaskIntegration()],
-                attach_stacktrace=True,
-                with_locals=True,
-                server_name=CONTAINER_NAME,
-            )
+        sentry_sdk.init(
+            _SENTRY_DSN,
+            traces_sampler=sentry_traces_sampler,
+            integrations=[FlaskIntegration()],
+            attach_stacktrace=True,
+            with_locals=True,
+            server_name=CONTAINER_NAME,
+        )
     except Exception:
         pass
 
