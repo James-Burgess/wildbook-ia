@@ -298,6 +298,60 @@ class JobStore:
             }
         return result
 
+    def get_status_counts(self):
+        """Return status counts grouped by (status, endpoint).
+
+        Returns ``{(status, endpoint): count}``.  Uses GROUP BY so it
+        never loads individual rows — fast even with thousands of jobs.
+        """
+        rows = self._conn.execute(
+            """SELECT status, request_json, COUNT(*) as cnt
+               FROM jobs
+               GROUP BY status, request_json
+            """
+        ).fetchall()
+        result = {}
+        for status, req_json, cnt in rows:
+            req = _loads(req_json) if req_json else None
+            endpoint = str(req.get('endpoint')) if req else 'None'
+            key = (status or '_error', endpoint)
+            result[key] = result.get(key, 0) + cnt
+        return result
+
+    def get_active_jobs(self):
+        """Return timing info for jobs that are currently working or recently completed.
+
+        Returns a list of dicts with status, endpoint, timing fields.
+        Only fetches 'working' jobs (for elapsed) and the most recent
+        completed/exception jobs (for runtime/turnaround reporting).
+        """
+        rows = self._conn.execute(
+            """SELECT status, request_json, time_started,
+                      time_runtime_sec, time_turnaround_sec
+               FROM jobs
+               WHERE status = 'working'
+               UNION ALL
+               SELECT status, request_json, time_started,
+                      time_runtime_sec, time_turnaround_sec
+               FROM jobs
+               WHERE status IN ('completed', 'exception')
+                 AND time_runtime_sec IS NOT NULL
+               ORDER BY time_started DESC
+               LIMIT 10
+            """
+        ).fetchall()
+        result = []
+        for row in rows:
+            req = _loads(row[1]) if row[1] else None
+            result.append({
+                'status': row[0],
+                'endpoint': str(req.get('endpoint')) if req else 'None',
+                'time_started': row[2],
+                'time_runtime_sec': row[3],
+                'time_turnaround_sec': row[4],
+            })
+        return result
+
     def get_metadata(self, jobid):
         """Reconstruct the full metadata dict for one job.
 

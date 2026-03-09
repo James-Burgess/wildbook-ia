@@ -260,26 +260,7 @@ def _prometheus_refresh(ibs, container_name):
     except Exception:
         logger.exception('[prometheus] Failed to update asset gauges')
 
-    try:
-        # Read job status directly from SQLite instead of going through
-        # ZMQ to the collector — avoids blocking the single-threaded
-        # collector loop just for metrics.
-        from os.path import join as _join
-
-        from wbia.web.job_store import JobStore
-
-        _shelve_path = ibs.get_shelves_path()
-        _db_path = _join(_shelve_path, 'jobs.db')
-        _store = JobStore(_db_path)
-        try:
-            job_status_dict = _store.get_job_status_dict(limit=100)
-        finally:
-            _store.close()
-    except Exception:
-        logger.exception('[prometheus] Failed to read job status from SQLite')
-        job_status_dict = {}
-
-    job_uuid_list = list(job_status_dict.keys())
+    # ---- Job engine status counts (full, not capped) ----
     status_dict_template = {
         'received': 0,
         'accepted': 0,
@@ -294,48 +275,49 @@ def _prometheus_refresh(ibs, container_name):
     }
     status_dict = {
         '*': status_dict_template.copy(),
-        'max': status_dict_template.copy(),
     }
     endpoints = set()
+
+    try:
+        # Use lightweight GROUP BY query — never loads individual rows.
+        from os.path import join as _join
+
+        from wbia.web.job_store import JobStore
+
+        _shelve_path = ibs.get_shelves_path()
+        _db_path = _join(_shelve_path, 'jobs.db')
+        _store = JobStore(_db_path)
+        try:
+            status_counts = _store.get_status_counts()
+            active_jobs = _store.get_active_jobs()
+        finally:
+            _store.close()
+    except Exception:
+        logger.exception('[prometheus] Failed to read job status from SQLite')
+        status_counts = {}
+        active_jobs = []
+
+    # Build per-endpoint and aggregate counts
+    for (status, endpoint), count in status_counts.items():
+        if status not in status_dict_template:
+            status = '_error'
+        if endpoint not in status_dict:
+            status_dict[endpoint] = status_dict_template.copy()
+        endpoints.add(endpoint)
+        status_dict[endpoint][status] += count
+        status_dict['*'][status] += count
+
+    # Timing metrics from active/recent jobs
     working_endpoint = None
+    try:
+        from wbia.web.job_engine import _timestamp, calculate_timedelta
 
-    for job_uuid in job_uuid_list:
-        try:
-            job_status = job_status_dict[job_uuid]
-
-            status = '{}'.format(job_status.get('status', '_error'))
-            endpoint = '{}'.format(job_status.get('endpoint', 'None'))
-            jobcounter = job_status.get('jobcounter', -1) or -1
-
-            if status not in status_dict_template:
-                status = '_error'
-
-            if endpoint not in status_dict:
-                status_dict[endpoint] = status_dict_template.copy()
-
-            endpoints.add(endpoint)
-        except Exception:
-            continue
-
-        try:
-            if status == 'working':
-                from wbia.web.job_engine import (
-                    _timestamp,
-                    calculate_timedelta,
-                )
-
-                started = job_status.get('time_started')
+        for job in active_jobs:
+            endpoint = job.get('endpoint', 'None')
+            if job['status'] == 'working':
+                started = job.get('time_started')
                 if started is not None:
-                    now = _timestamp()
-                    (
-                        hours,
-                        minutes,
-                        seconds,
-                        total_seconds,
-                    ) = calculate_timedelta(started, now)
-                    logger.info(
-                        'ELAPSED (%s): %d seconds...' % (job_uuid, total_seconds)
-                    )
+                    _, _, _, total_seconds = calculate_timedelta(started, _timestamp())
                     PROMETHEUS_DATA['elapsed'].labels(
                         name=container_name, endpoint=endpoint
                     ).set(total_seconds)
@@ -343,54 +325,26 @@ def _prometheus_refresh(ibs, container_name):
                         name=container_name, endpoint='*'
                     ).set(total_seconds)
                     working_endpoint = endpoint
-        except Exception:
-            pass
-
-        try:
-            if status not in status_dict_template:
-                logger.info('UNRECOGNIZED STATUS {!r}'.format(status))
-            status_dict[endpoint][status] += 1
-            status_dict['*'][status] += 1
-
-            current_max = status_dict['max'][status]
-            status_dict['max'][status] = max(current_max, jobcounter)
-
-            if job_uuid not in PROMETHUS_JOB_CACHE_DICT:
-                PROMETHUS_JOB_CACHE_DICT[job_uuid] = {}
-        except Exception:
-            pass
-
-        try:
-            runtime_sec = job_status.get('time_runtime_sec', None)
-            if (
-                runtime_sec is not None
-                and 'runtime' not in PROMETHUS_JOB_CACHE_DICT.get(job_uuid, {})
-            ):
-                PROMETHUS_JOB_CACHE_DICT.setdefault(job_uuid, {})['runtime'] = runtime_sec
-                PROMETHEUS_DATA['runtime'].labels(
-                    name=container_name, endpoint=endpoint
-                ).set(runtime_sec)
-                PROMETHEUS_DATA['runtime'].labels(
-                    name=container_name, endpoint='*'
-                ).set(runtime_sec)
-        except Exception:
-            pass
-
-        try:
-            turnaround_sec = job_status.get('time_turnaround_sec', None)
-            if (
-                turnaround_sec is not None
-                and 'turnaround' not in PROMETHUS_JOB_CACHE_DICT.get(job_uuid, {})
-            ):
-                PROMETHUS_JOB_CACHE_DICT.setdefault(job_uuid, {})['turnaround'] = turnaround_sec
-                PROMETHEUS_DATA['turnaround'].labels(
-                    name=container_name, endpoint=endpoint
-                ).set(turnaround_sec)
-                PROMETHEUS_DATA['turnaround'].labels(
-                    name=container_name, endpoint='*'
-                ).set(turnaround_sec)
-        except Exception:
-            pass
+            else:
+                # Recently completed — report runtime/turnaround
+                runtime_sec = job.get('time_runtime_sec')
+                if runtime_sec is not None:
+                    PROMETHEUS_DATA['runtime'].labels(
+                        name=container_name, endpoint=endpoint
+                    ).set(runtime_sec)
+                    PROMETHEUS_DATA['runtime'].labels(
+                        name=container_name, endpoint='*'
+                    ).set(runtime_sec)
+                turnaround_sec = job.get('time_turnaround_sec')
+                if turnaround_sec is not None:
+                    PROMETHEUS_DATA['turnaround'].labels(
+                        name=container_name, endpoint=endpoint
+                    ).set(turnaround_sec)
+                    PROMETHEUS_DATA['turnaround'].labels(
+                        name=container_name, endpoint='*'
+                    ).set(turnaround_sec)
+    except Exception:
+        logger.exception('[prometheus] Failed to update job timing gauges')
 
     try:
         if working_endpoint is None:
