@@ -83,11 +83,6 @@ PROMETHEUS_DATA = {
         'Job engine status',
         ['name', 'process'],
     ),
-    'elapsed': Gauge(
-        'wbia_elapsed_seconds',
-        'Number of elapsed seconds for the current working job',
-        ['name', 'endpoint'],
-    ),
     'runtime': Gauge(
         'wbia_runtime_seconds',
         'Number of runtime seconds for the current working job',
@@ -307,59 +302,30 @@ def _prometheus_refresh(ibs, container_name):
         status_dict[endpoint][status] += count
         status_dict['*'][status] += count
 
-    # Timing metrics from active/recent jobs
-    working_endpoint = None
+    # Timing metrics from recently completed jobs
     try:
-        from wbia.web.job_engine import _timestamp, calculate_timedelta
-
         for job in active_jobs:
-            endpoint = job.get('endpoint', 'None')
             if job['status'] == 'working':
-                started = job.get('time_started')
-                if started is not None:
-                    _, _, _, total_seconds = calculate_timedelta(started, _timestamp())
-                    PROMETHEUS_DATA['elapsed'].labels(
-                        name=container_name, endpoint=endpoint
-                    ).set(total_seconds)
-                    PROMETHEUS_DATA['elapsed'].labels(
-                        name=container_name, endpoint='*'
-                    ).set(total_seconds)
-                    working_endpoint = endpoint
-            else:
-                # Recently completed — report runtime/turnaround
-                runtime_sec = job.get('time_runtime_sec')
-                if runtime_sec is not None:
-                    PROMETHEUS_DATA['runtime'].labels(
-                        name=container_name, endpoint=endpoint
-                    ).set(runtime_sec)
-                    PROMETHEUS_DATA['runtime'].labels(
-                        name=container_name, endpoint='*'
-                    ).set(runtime_sec)
-                turnaround_sec = job.get('time_turnaround_sec')
-                if turnaround_sec is not None:
-                    PROMETHEUS_DATA['turnaround'].labels(
-                        name=container_name, endpoint=endpoint
-                    ).set(turnaround_sec)
-                    PROMETHEUS_DATA['turnaround'].labels(
-                        name=container_name, endpoint='*'
-                    ).set(turnaround_sec)
+                continue
+            endpoint = job.get('endpoint', 'None')
+            runtime_sec = job.get('time_runtime_sec')
+            if runtime_sec is not None:
+                PROMETHEUS_DATA['runtime'].labels(
+                    name=container_name, endpoint=endpoint
+                ).set(runtime_sec)
+                PROMETHEUS_DATA['runtime'].labels(
+                    name=container_name, endpoint='*'
+                ).set(runtime_sec)
+            turnaround_sec = job.get('time_turnaround_sec')
+            if turnaround_sec is not None:
+                PROMETHEUS_DATA['turnaround'].labels(
+                    name=container_name, endpoint=endpoint
+                ).set(turnaround_sec)
+                PROMETHEUS_DATA['turnaround'].labels(
+                    name=container_name, endpoint='*'
+                ).set(turnaround_sec)
     except Exception:
         logger.exception('[prometheus] Failed to update job timing gauges')
-
-    try:
-        if working_endpoint is None:
-            PROMETHEUS_DATA['elapsed'].labels(
-                name=container_name, endpoint='*'
-            ).set(0.0)
-
-        for endpoint in endpoints:
-            if endpoint == working_endpoint:
-                continue
-            PROMETHEUS_DATA['elapsed'].labels(
-                name=container_name, endpoint=endpoint
-            ).set(0.0)
-    except Exception:
-        pass
 
     try:
         for endpoint in status_dict:
