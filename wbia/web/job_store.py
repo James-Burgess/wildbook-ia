@@ -333,11 +333,15 @@ class JobStore:
                UNION ALL
                SELECT status, request_json, time_started,
                       time_runtime_sec, time_turnaround_sec
-               FROM jobs
-               WHERE status IN ('completed', 'exception')
-                 AND time_runtime_sec IS NOT NULL
-               ORDER BY time_started DESC
-               LIMIT 10
+               FROM (
+                   SELECT status, request_json, time_started,
+                          time_runtime_sec, time_turnaround_sec
+                   FROM jobs
+                   WHERE status IN ('completed', 'exception')
+                     AND time_runtime_sec IS NOT NULL
+                   ORDER BY time_started DESC
+                   LIMIT 10
+               )
             """
         ).fetchall()
         result = []
