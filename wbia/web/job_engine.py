@@ -1018,113 +1018,112 @@ class JobInterface(object):
             shelve_archive_path = '{}_ARCHIVE'.format(shelve_path)
             ut.ensuredir(shelve_archive_path)
 
-            # Open a read-only JobStore for startup recovery.
-            # The collector will open its own read-write instance.
+            # Open a JobStore for startup recovery (read + batch register).
+            # The collector will open its own instance once it finishes starting.
             job_store = JobStore(join(shelve_path, 'jobs.db'))
+            try:
+                record_filepath_list = _get_engine_job_paths(ibs)
 
-            record_filepath_list = _get_engine_job_paths(ibs)
+                num_records = len(record_filepath_list)
+                print('Reloading %d engine jobs...' % (num_records,))
 
-            num_records = len(record_filepath_list)
-            print('Reloading %d engine jobs...' % (num_records,))
-
-            arg_iter = list(
-                zip(
-                    record_filepath_list,
-                    [shelve_path] * num_records,
-                    [shelve_archive_path] * num_records,
-                    [jobiface.id_] * num_records,
-                    [job_store] * num_records,
+                arg_iter = list(
+                    zip(
+                        record_filepath_list,
+                        [shelve_path] * num_records,
+                        [shelve_archive_path] * num_records,
+                        [jobiface.id_] * num_records,
+                        [job_store] * num_records,
+                    )
                 )
-            )
-            # Run sequentially — JobStore is not fork-safe
-            values_list = []
-            for args in arg_iter:
-                values_list.append(initialize_process_record(*args))
+                # Run sequentially — JobStore is not fork-safe
+                values_list = []
+                for args in arg_iter:
+                    values_list.append(initialize_process_record(*args))
 
-            print('Processed %d records' % (len(values_list),))
+                print('Processed %d records' % (len(values_list),))
 
-            restart_jobcounter_list = []
-            restart_jobid_list = []
-            restart_request_list = []
+                restart_jobcounter_list = []
+                restart_jobid_list = []
+                restart_request_list = []
 
-            global_jobcounter = 0
-            num_registered, num_restarted = 0, 0
-            num_completed, num_archived, num_suppressed, num_corrupted = 0, 0, 0, 0
+                global_jobcounter = 0
+                num_registered, num_restarted = 0, 0
+                num_completed, num_archived, num_suppressed, num_corrupted = 0, 0, 0, 0
 
-            # Build batch of jobs to register with the collector in one message
-            batch_register = []  # list of (jobid, status, jobcounter)
+                # Build batch of jobs to register
+                batch_register = []  # list of (jobid, status, jobcounter)
 
-            for values in tqdm.tqdm(values_list):
-                (
-                    jobcounter,
-                    jobid,
-                    engine_request,
-                    archived,
-                    completed,
-                    suppressed,
-                    corrupted,
-                ) = values
+                for values in tqdm.tqdm(values_list):
+                    (
+                        jobcounter,
+                        jobid,
+                        engine_request,
+                        archived,
+                        completed,
+                        suppressed,
+                        corrupted,
+                    ) = values
 
-                if archived:
-                    assert engine_request is None
-                    num_archived += 1
-                    continue
+                    if archived:
+                        assert engine_request is None
+                        num_archived += 1
+                        continue
 
-                if jobcounter is not None:
-                    global_jobcounter = max(global_jobcounter, jobcounter)
+                    if jobcounter is not None:
+                        global_jobcounter = max(global_jobcounter, jobcounter)
 
-                if engine_request is None:
-                    assert not archived
-                    if completed:
-                        status = 'completed'
-                        num_completed += 1
-                    elif suppressed:
-                        status = 'suppressed'
-                        num_suppressed += 1
+                    if engine_request is None:
+                        assert not archived
+                        if completed:
+                            status = 'completed'
+                            num_completed += 1
+                        elif suppressed:
+                            status = 'suppressed'
+                            num_suppressed += 1
+                        else:
+                            status = 'corrupted'
+                            num_corrupted += 1
+
+                        batch_register.append((jobid, status, jobcounter))
                     else:
-                        status = 'corrupted'
-                        num_corrupted += 1
+                        num_restarted += 1
+                        restart_jobcounter_list.append(jobcounter)
+                        restart_jobid_list.append(jobid)
+                        restart_request_list.append(engine_request)
 
-                    batch_register.append((jobid, status, jobcounter))
-                else:
-                    num_restarted += 1
-                    restart_jobcounter_list.append(jobcounter)
-                    restart_jobid_list.append(jobid)
-                    restart_request_list.append(engine_request)
+                    num_registered += 1
 
-                num_registered += 1
+                assert num_restarted == len(restart_jobcounter_list)
 
-            assert num_restarted == len(restart_jobcounter_list)
-
-            # Send all registrations in a single ZMQ message to avoid
-            # thousands of individual round-trips on production servers.
-            if batch_register:
-                print('Sending batch register for %d jobs...' % (len(batch_register),))
-                reply = jobiface._collect_request({
-                    'action': 'register_batch',
-                    'jobs': [
+                # Write directly to the local JobStore instead of routing
+                # through ZMQ.  The collector subprocess may still be starting
+                # (loading the database), so a ZMQ send here can easily time out
+                # with thousands of legacy jobs.  SQLite WAL mode allows this
+                # concurrent writer safely.
+                if batch_register:
+                    print('Batch registering %d jobs directly to SQLite...' % (len(batch_register),))
+                    job_store.register_batch([
                         {'jobid': jid, 'status': st, 'jobcounter': jc}
                         for jid, st, jc in batch_register
-                    ],
-                })
-                assert reply.get('status') == 'ok', \
-                    'Batch register failed: {!r}'.format(reply)
-                print('Batch register complete: %d jobs registered' % (reply.get('num_registered', 0),))
+                    ])
+                    print('Batch register complete: %d jobs registered' % (len(batch_register),))
 
-            print('Registered %d jobs...' % (num_registered,))
-            print('\t %d completed jobs' % (num_completed,))
-            print('\t %d restarted jobs' % (num_restarted,))
-            print('\t %d suppressed jobs' % (num_suppressed,))
-            print('\t %d corrupted jobs' % (num_corrupted,))
-            print('Archived %d jobs...' % (num_archived,))
+                print('Registered %d jobs...' % (num_registered,))
+                print('\t %d completed jobs' % (num_completed,))
+                print('\t %d restarted jobs' % (num_restarted,))
+                print('\t %d suppressed jobs' % (num_suppressed,))
+                print('\t %d corrupted jobs' % (num_corrupted,))
+                print('Archived %d jobs...' % (num_archived,))
 
-            # Reclaim space from archived jobs and close the startup store
-            if num_archived > 0:
-                try:
-                    job_store.vacuum()
-                except Exception:
-                    pass
-            job_store.close()
+                # Reclaim space from archived jobs
+                if num_archived > 0:
+                    try:
+                        job_store.vacuum()
+                    except Exception:
+                        pass
+            finally:
+                job_store.close()
 
             # Update the jobcounter to be up to date
             update_notify = {
@@ -2174,12 +2173,6 @@ def on_collect_request(
         _jc = metadata.get('jobcounter', -1) if metadata else -1
         job_store.register_job(jobid, status, _jc)
         print('Register jobid=%s status=%s jobcounter=%s' % (jobid, status, _jc))
-
-    elif action == 'register_batch':
-        jobs = collect_request.get('jobs', [])
-        job_store.register_batch(jobs)
-        reply['num_registered'] = len(jobs)
-        print('Batch registered %d jobs' % (len(jobs),))
 
     elif action == 'metadata':
         metadata = collect_request.get('metadata', None)
