@@ -21,12 +21,21 @@ from wbia.web import (
     routes,
     routes_ajax,
     routes_csv,
-    routes_demo,
-    routes_experiments,
     routes_submit,
 )
 
-if controller_inject.MICROSOFT_API_ENABLED:
-    from wbia.web import apis_microsoft
-# if controller_inject.SCOUT_API_ENABLED:
-#     from wbia.web import apis_scout
+__all__ = [
+    'apis',
+    'apis_detect',
+    'apis_engine',
+    'apis_json',
+    'apis_query',
+    'apis_scout',
+    'apis_sync',
+    'app',
+    'appfuncs',
+    'routes',
+    'routes_ajax',
+    'routes_csv',
+    'routes_submit',
+]

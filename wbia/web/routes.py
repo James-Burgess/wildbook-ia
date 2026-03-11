@@ -1741,8 +1741,13 @@ def view_graphs(sync=False, **kwargs):
 def view_jobs(**kwargs):
     ibs = current_app.ibs
 
-    response = ibs.get_job_status()
-    assert response['status'] == 'ok'
+    # Limit how many jobs to display (default 100, configurable via ?limit=N)
+    limit = request.args.get('limit', 100, type=int)
+
+    response = ibs.get_job_status(limit=limit)
+
+    if response.get('status') != 'ok':
+        response = {'status': 'ok', 'json_result': {}}
 
     jobs = response['json_result']
     job_list = []

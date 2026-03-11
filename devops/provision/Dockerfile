@@ -23,8 +23,6 @@ RUN set -ex \
  && cd /wbia \
  && git clone https://github.com/WildMeOrg/wbia-tpl-pyhesaff.git \
  && git clone https://github.com/WildMeOrg/wbia-tpl-pyflann.git \
- && git clone https://github.com/WildMeOrg/wbia-tpl-pydarknet.git \
- # Depricated
  && git clone https://github.com/WildMeOrg/wbia-deprecate-tpl-brambox.git \
  && git clone https://github.com/WildMeOrg/wbia-deprecate-tpl-lightnet.git
 
@@ -89,12 +87,6 @@ RUN set -ex \
  && cd /wbia/wbia-tpl-pyflann \
  && /bin/bash run_developer_setup.sh'
 
-RUN set -ex \
- && /bin/bash -xc '. /virtualenv/env3/bin/activate \
- && cd /wbia/wbia-tpl-pydarknet \
- && /bin/bash run_developer_setup.sh'
-
-
 RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
  && cd /wbia/wbia-deprecate-tpl-brambox \
  && pip install --no-build-isolation --no-cache-dir -e .'
@@ -102,7 +94,6 @@ RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
 RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \
  && cd /wbia/wbia-deprecate-tpl-lightnet \
  && pip install --no-build-isolation --no-cache-dir -e .'
-
 
 # Install Rust non-interactively (required for timm library used in WBIA)
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -161,7 +152,7 @@ RUN /virtualenv/env3/bin/pip uninstall -y \
      opencv-python-headless opencv-contrib-python-headless \
  ; /virtualenv/env3/bin/pip install --no-cache-dir \
      pynvml \
-     opencv-contrib-python-headless
+     opencv-contrib-python-headless==4.7.0.72
 
 # Wildbook IA problematic dependencies
 RUN /bin/bash -xc '. /virtualenv/env3/bin/activate \

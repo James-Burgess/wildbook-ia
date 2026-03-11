@@ -442,12 +442,7 @@ def hello_world(*args, **kwargs):
 @register_ibs_method
 @register_api('/api/test/heartbeat/', methods=['GET', 'POST', 'DELETE', 'PUT'])
 def heartbeat(ibs, *args, **kwargs):
-    """"""
-    # ut.embed()
-
-    if PROMETHEUS:
-        ibs.prometheus_update()
-
+    """Lightweight liveness check.  Must never block on ZMQ, DB, or network."""
     return True
 
 

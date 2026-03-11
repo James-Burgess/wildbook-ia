@@ -330,7 +330,12 @@ def canonical_localizer_train(ibs, species, ensembles=3, **kwargs):
 
 @register_ibs_method
 def localizer_yolo_train(ibs, species_list=None, **kwargs):
-    from pydarknet import Darknet_YOLO_Detector
+    try:
+        from pydarknet import Darknet_YOLO_Detector
+    except ImportError:
+        raise RuntimeError(
+            'pydarknet is not installed; localizer_yolo_train is unavailable'
+        )
 
     data_path = ibs.export_to_xml(species_list=species_list, **kwargs)
     output_path = join(ibs.get_cachedir(), 'training', 'localizer')

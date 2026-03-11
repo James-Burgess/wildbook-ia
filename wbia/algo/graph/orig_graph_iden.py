@@ -18,15 +18,15 @@ class OrigAnnotInference(object):
     Make name inferences about a series of AnnotMatches
 
     CommandLine:
-        python -m wbia.unstable.orig_graph_iden OrigAnnotInference --show --no-cnn
-        python -m wbia.unstable.orig_graph_iden OrigAnnotInference --no-cnn
-        python -m wbia.unstable.orig_graph_iden OrigAnnotInference:0 --no-cnn
-        python -m wbia.unstable.orig_graph_iden OrigAnnotInference:1 --no-cnn
-        python -m wbia.unstable.orig_graph_iden OrigAnnotInference:2 --show
+        python -m wbia.algo.graph.orig_graph_iden OrigAnnotInference --show --no-cnn
+        python -m wbia.algo.graph.orig_graph_iden OrigAnnotInference --no-cnn
+        python -m wbia.algo.graph.orig_graph_iden OrigAnnotInference:0 --no-cnn
+        python -m wbia.algo.graph.orig_graph_iden OrigAnnotInference:1 --no-cnn
+        python -m wbia.algo.graph.orig_graph_iden OrigAnnotInference:2 --show
 
     Example:
         >>> # DISABLE_DOCTEST
-        >>> from wbia.unstable.orig_graph_iden import *  # NOQA
+        >>> from wbia.algo.graph.orig_graph_iden import *  # NOQA
         >>> import wbia
         >>> #qreq_ = wbia.testdata_qreq_(default_qaids=[1, 2, 3, 4], default_daids=[2, 3, 4, 5, 6, 7, 8, 9, 10])
         >>> a='default:dsize=20,excluderef=True,qnum_names=5,min_pername=3,qsample_per_name=1,dsample_per_name=2',
@@ -48,7 +48,7 @@ class OrigAnnotInference(object):
 
     Example:
         >>> # DISABLE_DOCTEST
-        >>> from wbia.unstable.orig_graph_iden import *  # NOQA
+        >>> from wbia.algo.graph.orig_graph_iden import *  # NOQA
         >>> import wbia
         >>> a='default:dsize=20,excluderef=True,qnum_names=2,min_pername=3,qsample_per_name=1,dsample_per_name=2',
         >>> qreq_ = wbia.testdata_qreq_(defaultdb='PZ_MTEST', a=a, p='default:proot=vsmany', use_cache=False, verbose=0)
@@ -69,7 +69,7 @@ class OrigAnnotInference(object):
 
     Example:
         >>> # DISABLE_DOCTEST
-        >>> from wbia.unstable.orig_graph_iden import *  # NOQA
+        >>> from wbia.algo.graph.orig_graph_iden import *  # NOQA
         >>> import wbia
         >>> a='default:dsize=20,excluderef=True,qnum_names=2,min_pername=3,qsample_per_name=1,dsample_per_name=2',
         >>> qreq_ = wbia.testdata_qreq_(defaultdb='PZ_MTEST', a=a, p='default:pipeline_root=vsmany', use_cache=False, verbose=0)
@@ -106,7 +106,7 @@ class OrigAnnotInference(object):
             [
                 ('aid1', aid_pairs.T[0]),
                 ('aid2', aid_pairs.T[1]),
-                ('p_match', truth.astype(np.float)),
+                ('p_match', truth.astype(np.float64)),
                 ('p_nomatch', 1.0 - truth),
                 ('p_notcomp', np.array([0.0] * len(aid_pairs))),
             ]
@@ -209,7 +209,7 @@ class OrigAnnotInference(object):
         if False:
             kw = dict(precision=2, max_line_width=140, suppress_small=True)
             logger.info(ut.hz_str('prob_names = ', ut.repr2((prob_names), **kw)))
-            logger.info(ut.hz_str('postcut = ', ut.repr2((postcut).astype(np.int), **kw)))
+            logger.info(ut.hz_str('postcut = ', ut.repr2((postcut).astype(np.int64), **kw)))
         matching_qaids = ut.take(qaid_list, qxs)
         matched_nids = ut.take(unique_nids, nxs)
 

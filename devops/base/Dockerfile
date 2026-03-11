@@ -53,8 +53,6 @@ RUN set -ex \
         liblz4-dev \
         # Install dependencies for PyHesaff
         libgdal-dev \
-        # Install dependencies for PyDarknet
-        libtbb-dev \
         # Install dependencies for vtool
         libeigen3-dev \
         # Install dependencies for Python packages

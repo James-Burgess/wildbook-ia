@@ -8,7 +8,6 @@ import logging
 # from wbia import dtool
 from os.path import join, splitext
 
-import six
 import utool as ut
 from utool._internal.meta_util_six import get_funcname
 
@@ -72,8 +71,7 @@ def make_config_metaclass():
 
     Example:
         from wbia.algo.Config import *  # NOQA
-        @six.add_metaclass(ConfigMetaclass)
-        class FooConfig(ConfigBase):
+        class FooConfig(ConfigBase, metaclass=ConfigMetaclass):
 
             def __init__(cfg):
                 super(FooConfig, cfg).__init__(name='FooConfig')
@@ -204,14 +202,12 @@ def make_config_metaclass():
 ConfigMetaclass = make_config_metaclass()
 
 
-@six.add_metaclass(ConfigMetaclass)
-class GenericConfig(ConfigBase):
+class GenericConfig(ConfigBase, metaclass=ConfigMetaclass):
     def __init__(cfg, *args, **kwargs):
         super(GenericConfig, cfg).__init__(*args, **kwargs)
 
 
-@six.add_metaclass(ConfigMetaclass)
-class NNConfig(ConfigBase):
+class NNConfig(ConfigBase, metaclass=ConfigMetaclass):
     r"""
     CommandLine:
         python -m wbia.algo.Config --exec-NNConfig
@@ -272,8 +268,7 @@ class NNConfig(ConfigBase):
         return param_info_list
 
 
-@six.add_metaclass(ConfigMetaclass)
-class SpatialVerifyConfig(ConfigBase):
+class SpatialVerifyConfig(ConfigBase, metaclass=ConfigMetaclass):
     """
     Spatial verification
     """
@@ -329,8 +324,7 @@ class SpatialVerifyConfig(ConfigBase):
         return sv_cfgstr
 
 
-@six.add_metaclass(ConfigMetaclass)
-class AggregateConfig(ConfigBase):
+class AggregateConfig(ConfigBase, metaclass=ConfigMetaclass):
     """
     Old Agg Cfg
     """
@@ -365,8 +359,7 @@ class AggregateConfig(ConfigBase):
         return agg_cfgstr
 
 
-@six.add_metaclass(ConfigMetaclass)
-class FlannConfig(ConfigBase):
+class FlannConfig(ConfigBase, metaclass=ConfigMetaclass):
     r"""
     this flann is only for neareset neighbors in vsone/many
     TODO: this might not need to be here, should be part of neighbor config
@@ -434,8 +427,7 @@ class FlannConfig(ConfigBase):
         return flann_cfgstrs
 
 
-@six.add_metaclass(ConfigMetaclass)
-class NNWeightConfig(ConfigBase):
+class NNWeightConfig(ConfigBase, metaclass=ConfigMetaclass):
     r"""
     CommandLine:
         python -m wbia.algo.Config --test-NNWeightConfig
@@ -504,8 +496,7 @@ class NNWeightConfig(ConfigBase):
         return param_info_list
 
 
-@six.add_metaclass(ConfigMetaclass)
-class FeatureWeightConfig(ConfigBase):
+class FeatureWeightConfig(ConfigBase, metaclass=ConfigMetaclass):
     """
     CommandLine:
         python -m wbia.algo.Config --exec-FeatureWeightConfig
@@ -540,8 +531,7 @@ class FeatureWeightConfig(ConfigBase):
         )
 
 
-@six.add_metaclass(ConfigMetaclass)
-class QueryConfig(ConfigBase):
+class QueryConfig(ConfigBase, metaclass=ConfigMetaclass):
     """
     LNBNN ranking query configuration parameters
 
@@ -732,8 +722,7 @@ class QueryConfig(ConfigBase):
         return copy_
 
 
-@six.add_metaclass(ConfigMetaclass)
-class FeatureConfig(ConfigBase):
+class FeatureConfig(ConfigBase, metaclass=ConfigMetaclass):
     """
     Feature configuration object.
 
@@ -784,8 +773,7 @@ class FeatureConfig(ConfigBase):
         return hesaff_param_dict
 
 
-@six.add_metaclass(ConfigMetaclass)
-class ChipConfig(ConfigBase):
+class ChipConfig(ConfigBase, metaclass=ConfigMetaclass):
     """ChipConfig"""
 
     def __init__(cc_cfg, **kwargs):
@@ -810,8 +798,7 @@ class ChipConfig(ConfigBase):
         return core_annots.ChipConfig._param_info_list
 
 
-@six.add_metaclass(ConfigMetaclass)
-class DetectionConfig(ConfigBase):
+class DetectionConfig(ConfigBase, metaclass=ConfigMetaclass):
     """
     CommandLine:
         python -m wbia.algo.Config --test-DetectionConfig
@@ -848,8 +835,7 @@ class DetectionConfig(ConfigBase):
         return cfgstrs
 
 
-@six.add_metaclass(ConfigMetaclass)
-class OccurrenceConfig(ConfigBase):
+class OccurrenceConfig(ConfigBase, metaclass=ConfigMetaclass):
     """OccurrenceConfig
 
     CommandLine:
@@ -887,8 +873,7 @@ class OccurrenceConfig(ConfigBase):
         return param_info_list
 
 
-@six.add_metaclass(ConfigMetaclass)
-class DisplayConfig(ConfigBase):
+class DisplayConfig(ConfigBase, metaclass=ConfigMetaclass):
     """DisplayConfig"""
 
     def __init__(display_cfg, **kwargs):
@@ -905,8 +890,7 @@ class DisplayConfig(ConfigBase):
         return ['unimplemented']
 
 
-@six.add_metaclass(ConfigMetaclass)
-class OtherConfig(ConfigBase):
+class OtherConfig(ConfigBase, metaclass=ConfigMetaclass):
     def __init__(other_cfg, **kwargs):
         super(OtherConfig, other_cfg).__init__(name='other_cfg')
         # other_cfg.thumb_size      = 128

@@ -1,0 +1,8 @@
+# Development-only dependencies (not needed in production Docker images)
+ipython>=8.0,<8.20
+jupyter==1.0.0
+line-profiler==3.5.1
+pyfiglet==0.8.post1
+sphinx==5.1.1
+sip==6.6.2
+PyQt5==5.15.9

@@ -53,12 +53,12 @@ Notes:
 import multiprocessing
 import random
 import re
-import shelve
+import threading
 import time
 import uuid  # NOQA
 from datetime import datetime, timedelta
 from functools import partial
-from os.path import abspath, basename, exists, join, splitext
+from os.path import basename, exists, join, splitext
 
 import flask
 import numpy as np
@@ -67,7 +67,7 @@ import pytz
 # if False:
 #    import os
 #    os.environ['UTOOL_NOCNN'] = 'True'
-# import logging
+import logging
 import utool as ut
 import zmq
 
@@ -75,7 +75,7 @@ from wbia.control import controller_inject
 from wbia.utils import call_houston
 
 print, rrr, profile = ut.inject2(__name__)  # NOQA
-# logger = logging.getLogger('wbia')
+logger = logging.getLogger('wbia')
 
 
 CLASS_INJECT_KEY, register_ibs_method = controller_inject.make_ibs_register_decorator(
@@ -83,7 +83,16 @@ CLASS_INJECT_KEY, register_ibs_method = controller_inject.make_ibs_register_deco
 )
 register_api = controller_inject.get_wbia_flask_api(__name__)
 
-ctx = zmq.Context.instance()
+def _get_global_zmq_ctx():
+    """Return the process-global ZMQ context (created on first call).
+
+    Lazy so that importing this module in the Gunicorn master does not
+    create a ZMQ context that would be inherited (and become invalid)
+    across fork().  Background processes (engine, collector) each call
+    this in their own process after being spawned via multiprocessing.
+    """
+    return zmq.Context.instance()
+
 
 # FIXME: needs to use correct number of ports
 URL = 'tcp://127.0.0.1'
@@ -97,14 +106,8 @@ NUM_ENGINES = {
 VERBOSE_JOBS = ut.get_argflag('--verbose-jobs')
 
 
-GLOBAL_SHELVE_LOCK = multiprocessing.Lock()
-
-
 TIMESTAMP_FMTSTR = '%Y-%m-%d %H:%M:%S %Z'
 TIMESTAMP_TIMEZONE = 'US/Pacific'
-
-
-JOB_STATUS_CACHE = {}
 
 
 def update_proctitle(procname, dbname=None):
@@ -127,13 +130,6 @@ def _get_engine_job_paths(ibs):
     ut.ensuredir(shelve_path)
     record_filepath_list = list(ut.iglob(join(shelve_path, '*.pkl')))
     return record_filepath_list
-
-
-def _get_engine_lock_paths(ibs):
-    shelve_path = ibs.get_shelves_path()
-    ut.ensuredir(shelve_path)
-    lock_filepath_list = list(ut.iglob(join(shelve_path, '*.lock')))
-    return lock_filepath_list
 
 
 @register_ibs_method
@@ -208,24 +204,17 @@ def initialize_job_manager(ibs):
             dbdir=ibs.get_dbdir(), containerized=ibs.containerized
         )
 
-    # Delete any leftover locks from before
-    lock_filepath_list = _get_engine_lock_paths(ibs)
-    print('Deleting %d leftover engine locks' % (len(lock_filepath_list),))
-    for lock_filepath in lock_filepath_list:
-        ut.delete(lock_filepath)
-
     ibs.job_manager.jobiface = JobInterface(
         0, ibs.job_manager.reciever.port_dict, ibs=ibs
     )
-    ibs.job_manager.jobiface.initialize_client_thread()
-    # Wait until the collector becomes live
-    while 0 and True:
-        result = ibs.get_job_status(-1)
-        print('result = {!r}'.format(result))
-        if result['status'] == 'ok':
-            break
 
+    # Use temporary sockets for startup tasks (queue_interrupted_jobs).
+    # These must be opened, used, and CLOSED before Gunicorn forks,
+    # because ZMQ sockets cannot survive fork().  The permanent sockets
+    # for request handling are created lazily post-fork via _ensure_sockets().
+    ibs.job_manager.jobiface.initialize_client_thread()
     ibs.job_manager.jobiface.queue_interrupted_jobs()
+    ibs.job_manager.jobiface.close_client_sockets()
 
     # import wbia
     # #dbdir = '/media/raid/work/testdb1'
@@ -292,7 +281,7 @@ def get_process_alive_status(ibs):
 @register_api(
     '/api/engine/job/status/', methods=['GET', 'POST'], __api_plural_check__=False
 )
-def get_job_status(ibs, jobid=None):
+def get_job_status(ibs, jobid=None, limit=0, **kwargs):
     """
     Web call that returns the status of a job
 
@@ -327,20 +316,10 @@ def get_job_status(ibs, jobid=None):
 
     """
     if jobid is None:
-        status = ibs.job_manager.jobiface.get_job_status_dict()
+        status = ibs.job_manager.jobiface.get_job_status_dict(limit=limit)
     else:
         status = ibs.job_manager.jobiface.get_job_status(jobid)
     return status
-
-
-# @register_ibs_method
-# @register_api('/api/engine/job/terminate/', methods=['GET', 'POST'])
-# def send_job_terminate(ibs, jobid):
-#     """
-#     Web call that terminates a job
-#     """
-#     success = ibs.job_manager.jobiface.terminate_job(jobid)
-#     return success
 
 
 @register_ibs_method
@@ -387,14 +366,6 @@ def get_job_result(ibs, jobid):
     """
     result = ibs.job_manager.jobiface.get_job_result(jobid)
     return result
-
-
-# @register_ibs_method
-# @register_api('/api/engine/job/result/wait/', methods=['GET', 'POST'])
-# def wait_for_job_result(ibs, jobid, timeout=10, freq=0.1):
-#     ibs.job_manager.jobiface.wait_for_job_result(jobid, timeout=timeout, freq=freq)
-#     result = ibs.job_manager.jobiface.get_unpacked_result(jobid)
-#     return result
 
 
 def _get_random_open_port():
@@ -636,106 +607,51 @@ class JobBackend(object):
                     assert engine.is_alive(), 'engine died too soon'
 
     def get_process_alive_status(self):
+        """Check if background processes are alive.
+
+        Uses os.kill(pid, 0) instead of proc.is_alive() because
+        is_alive() relies on waitpid(), which only works for direct
+        children.  After Gunicorn fork(), the worker process cannot
+        waitpid() on the master's children (engine, collector).
+        """
+        import os
+
+        def _pid_alive(proc):
+            try:
+                pid = proc.pid
+                if pid is None:
+                    return False
+                os.kill(pid, 0)
+                return True
+            except (ProcessLookupError, PermissionError):
+                return False
+            except Exception:
+                return False
+
         status_dict = {}
 
         if self.spawn_queue:
-            status_dict['engine_queue'] = self.engine_queue_proc.is_alive()
-            status_dict['collect_queue'] = self.collect_queue_proc.is_alive()
+            status_dict['engine_queue'] = _pid_alive(self.engine_queue_proc)
+            status_dict['collect_queue'] = _pid_alive(self.collect_queue_proc)
 
         if self.spawn_collector:
-            status_dict['collector'] = self.collect_proc.is_alive()
+            status_dict['collector'] = _pid_alive(self.collect_proc)
 
         if self.spawn_engine:
             for lane in self.engine_procs:
                 for id_, engine in enumerate(self.engine_procs[lane]):
                     engine_str = 'engine.{}.{}'.format(lane, id_)
-                    status_dict[engine_str] = engine.is_alive()
+                    status_dict[engine_str] = _pid_alive(engine)
 
         return status_dict
 
 
-def get_shelve_lock_filepath(shelve_filepath):
-    shelve_lock_filepath = '{}.lock'.format(shelve_filepath)
-    return shelve_lock_filepath
-
-
-def touch_shelve_lock_file(shelve_filepath):
-    shelve_lock_filepath = get_shelve_lock_filepath(shelve_filepath)
-    assert not exists(shelve_lock_filepath)
-    ut.touch(shelve_lock_filepath, verbose=False)
-    assert exists(shelve_lock_filepath)
-
-
-def delete_shelve_lock_file(shelve_filepath):
-    shelve_lock_filepath = get_shelve_lock_filepath(shelve_filepath)
-    assert exists(shelve_lock_filepath)
-    ut.delete(shelve_lock_filepath, verbose=False)
-    assert not exists(shelve_lock_filepath)
-
-
-def wait_for_shelve_lock_file(shelve_filepath, timeout=600):
-    shelve_lock_filepath = get_shelve_lock_filepath(shelve_filepath)
-    start_time = time.time()
-    while exists(shelve_lock_filepath):
-        current_time = time.time()
-        elapsed = current_time - start_time
-        if elapsed >= timeout:
-            return False
-        time.sleep(1)
-        if int(elapsed) % 5 == 0:
-            print('Waiting for {:0.02f} seconds for lock so far'.format(elapsed))
-    return True
-
-
-def get_shelve_value(shelve_filepath, key):
-    if shelve_filepath in [None, 'None', 'None.lock']:
-        return None
-    wait_for_shelve_lock_file(shelve_filepath)
-    with GLOBAL_SHELVE_LOCK:
-        wait_for_shelve_lock_file(shelve_filepath)
-        touch_shelve_lock_file(shelve_filepath)
-    value = None
-    try:
-        with shelve.open(shelve_filepath, 'r') as shelf:
-            value = shelf.get(key)
-    except Exception:
-        pass
-    delete_shelve_lock_file(shelve_filepath)
-    return value
-
-
-def set_shelve_value(shelve_filepath, key, value):
-    if shelve_filepath in [None, 'None', 'None.lock']:
-        return False
-    wait_for_shelve_lock_file(shelve_filepath)
-    with GLOBAL_SHELVE_LOCK:
-        wait_for_shelve_lock_file(shelve_filepath)
-        touch_shelve_lock_file(shelve_filepath)
-    flag = False
-    try:
-        with shelve.open(shelve_filepath) as shelf:
-            shelf[key] = value
-        flag = True
-    except Exception:
-        pass
-    delete_shelve_lock_file(shelve_filepath)
-    return flag
-
-
-def get_shelve_filepaths(ibs, jobid):
-    shelve_path = ibs.get_shelves_path()
-    shelve_input_filepath = abspath(join(shelve_path, '{}.input.shelve'.format(jobid)))
-    shelve_output_filepath = abspath(join(shelve_path, '{}.output.shelve'.format(jobid)))
-    return shelve_input_filepath, shelve_output_filepath
-
-
 def initialize_process_record(
     record_filepath,
-    shelve_input_filepath,
-    shelve_output_filepath,
     shelve_path,
     shelve_archive_path,
     jobiface_id,
+    job_store=None,
 ):
     MAX_ATTEMPTS = 20
     ARCHIVE_DAYS = 3
@@ -754,7 +670,7 @@ def initialize_process_record(
     jobid = splitext(basename(record_filepath))[0]
     jobcounter = None
 
-    # Load the engine record
+    # Load the engine record (.pkl — still written by web threads for crash recovery)
     record = ut.load_cPkl(record_filepath, verbose=False)
 
     # Load the record info
@@ -766,11 +682,14 @@ def initialize_process_record(
     suppressed = attempts >= MAX_ATTEMPTS
     corrupted = engine_request is None
 
-    # Load metadata
-    metadata = get_shelve_value(shelve_input_filepath, 'metadata')
+    # Load metadata from SQLite (or None if not yet stored)
+    metadata = job_store.get_metadata(jobid) if job_store is not None else None
 
     if metadata is None:
-        print('Missing metadata...corrupted')
+        # Pre-upgrade jobs won't have SQLite rows — treat as corrupted so
+        # they get archived on next restart.  This is expected on first
+        # boot after the shelve→SQLite migration.
+        print('No SQLite metadata for %s — archiving (expected after upgrade)' % (jobid,))
         corrupted = True
 
     archived = False
@@ -806,6 +725,7 @@ def initialize_process_record(
                 color = 'brightmagenta'
                 print_ = partial(ut.colorprint, color=color)
                 print_('ARCHIVING JOB (AGE: %d SECONDS)' % (job_age,))
+                # Move .pkl (and any leftover shelve files) to archive
                 job_scr_filepath_list = list(
                     ut.iglob(join(shelve_path, '{}*'.format(jobid)))
                 )
@@ -817,6 +737,9 @@ def initialize_process_record(
                         job_scr_filepath, job_dst_filepath, overwrite=True
                     )  # ut.copy allows for overwrite, ut.move does not
                     ut.delete(job_scr_filepath)
+                # Also remove from SQLite
+                if job_store is not None:
+                    job_store.delete_job(jobid)
 
     if archived:
         # We have archived the job, don't bother registering it
@@ -832,7 +755,6 @@ def initialize_process_record(
 
             print_('RESTARTING FAILED JOB FROM RESTART (ATTEMPT %d)' % (attempts + 1,))
             print_(ut.repr3(record_filepath))
-            # print_(ut.repr3(record))
 
             times = metadata.get('times', {})
             received = times['received']
@@ -854,22 +776,149 @@ class JobInterface(object):
         jobiface.ibs = ibs
         jobiface.verbose = 2 if VERBOSE_JOBS else 1
         jobiface.port_dict = port_dict
+        # Locks to protect ZMQ sockets from concurrent access by
+        # multiple Gunicorn/web-server threads.  ZMQ sockets are NOT
+        # thread-safe, so every send/recv pair must be atomic.
+        jobiface._engine_lock = threading.Lock()
+        jobiface._collect_lock = threading.Lock()
+        jobiface._init_lock = threading.Lock()
+        jobiface.engine_recieve_socket = None
+        jobiface.collect_recieve_socket = None
         print('JobInterface ports:')
         ut.print_dict(jobiface.port_dict)
+
+    def _ensure_sockets(jobiface):
+        """Lazily create ZMQ sockets on first use (post-fork), or recreate
+        after a timeout reset destroyed one or both sockets.
+
+        Uses _init_lock to prevent concurrent initialization.
+        """
+        if jobiface.engine_recieve_socket is not None and jobiface.collect_recieve_socket is not None:
+            return
+        with jobiface._init_lock:
+            if jobiface.engine_recieve_socket is not None and jobiface.collect_recieve_socket is not None:
+                return
+            jobiface._rebuild_sockets()
+
+    def _engine_request(jobiface, msg):
+        """Send a message to the engine and return the reply (thread-safe)."""
+        import time as _time
+
+        action = msg.get('action', msg.get('__set_jobcounter__', 'unknown'))
+        jobiface._ensure_sockets()
+        acquired = jobiface._engine_lock.acquire(timeout=10)
+        if not acquired:
+            logger.warning('[job_engine] Engine lock contention — could not acquire '
+                           'within 10s for action=%r (thread=%s)',
+                           action, threading.current_thread().name)
+            raise RuntimeError(
+                'Could not acquire engine lock within 10s. '
+                'Another request is likely waiting on the engine.'
+            )
+        _t0 = _time.monotonic()
+        try:
+            jobiface.engine_recieve_socket.send_json(msg)
+            reply = jobiface.engine_recieve_socket.recv_json()
+            _elapsed = _time.monotonic() - _t0
+            if _elapsed > 5.0:
+                logger.warning('[job_engine] Slow engine response: %.1fs for action=%r',
+                               _elapsed, action)
+            return reply
+        except zmq.error.Again:
+            _elapsed = _time.monotonic() - _t0
+            logger.error('[job_engine] Engine TIMEOUT after %.1fs for action=%r '
+                         '(thread=%s). Resetting socket.',
+                         _elapsed, action, threading.current_thread().name)
+            jobiface._reset_engine_socket()
+            raise RuntimeError(
+                'Job engine did not respond within the timeout period. '
+                'The engine process may have crashed or is overloaded.'
+            )
+        finally:
+            jobiface._engine_lock.release()
+
+    def _collect_request(jobiface, msg):
+        """Send a message to the collector and return the reply (thread-safe)."""
+        import time as _time
+
+        action = msg.get('action', 'unknown')
+        jobiface._ensure_sockets()
+        # Use a timeout on the lock so threads don't pile up behind a slow
+        # request.  If another thread is already waiting on recv_json(),
+        # fail fast rather than queueing indefinitely.
+        acquired = jobiface._collect_lock.acquire(timeout=10)
+        if not acquired:
+            logger.warning('[job_engine] Collector lock contention — could not acquire '
+                           'within 10s for action=%r (thread=%s)',
+                           action, threading.current_thread().name)
+            raise RuntimeError(
+                'Could not acquire collector lock within 10s. '
+                'Another request is likely waiting on the collector.'
+            )
+        _t0 = _time.monotonic()
+        try:
+            jobiface.collect_recieve_socket.send_json(msg)
+            reply = jobiface.collect_recieve_socket.recv_json()
+            _elapsed = _time.monotonic() - _t0
+            if _elapsed > 5.0:
+                logger.warning('[job_engine] Slow collector response: %.1fs for action=%r',
+                               _elapsed, action)
+            return reply
+        except zmq.error.Again:
+            _elapsed = _time.monotonic() - _t0
+            logger.error('[job_engine] Collector TIMEOUT after %.1fs for action=%r '
+                         '(thread=%s). Resetting socket.',
+                         _elapsed, action, threading.current_thread().name)
+            jobiface._reset_collect_socket()
+            raise RuntimeError(
+                'Job collector did not respond within the timeout period. '
+                'The collector process may have crashed or is overloaded.'
+            )
+        finally:
+            jobiface._collect_lock.release()
+
+    def _reset_engine_socket(jobiface):
+        """Close and nullify the engine socket so _ensure_sockets recreates it."""
+        try:
+            if jobiface.engine_recieve_socket is not None:
+                jobiface.engine_recieve_socket.close(linger=0)
+        except Exception:
+            pass
+        jobiface.engine_recieve_socket = None
+
+    def _reset_collect_socket(jobiface):
+        """Close and nullify the collect socket so _ensure_sockets recreates it."""
+        try:
+            if jobiface.collect_recieve_socket is not None:
+                jobiface.collect_recieve_socket.close(linger=0)
+        except Exception:
+            pass
+        jobiface.collect_recieve_socket = None
 
     def __del__(jobiface):
         if VERBOSE_JOBS:
             print('Cleaning up job frontend')
-        if jobiface.engine_recieve_socket is not None:
-            jobiface.engine_recieve_socket.disconnect(
-                jobiface.port_dict['engine_pull_url']
-            )
-            jobiface.engine_recieve_socket.close()
-        if jobiface.collect_recieve_socket is not None:
-            jobiface.collect_recieve_socket.disconnect(
-                jobiface.port_dict['collect_pull_url']
-            )
-            jobiface.collect_recieve_socket.close()
+        # Best-effort cleanup — skip if lock not acquired to avoid both
+        # hanging at shutdown and racing with active request threads.
+        for attr, lock_attr, url_key in [
+            ('engine_recieve_socket', '_engine_lock', 'engine_pull_url'),
+            ('collect_recieve_socket', '_collect_lock', 'collect_pull_url'),
+        ]:
+            try:
+                lock = getattr(jobiface, lock_attr, None)
+                sock = getattr(jobiface, attr, None)
+                if sock is None:
+                    continue
+                acquired = lock.acquire(blocking=False) if lock else False
+                if not acquired:
+                    continue  # another thread owns the socket — let it clean up
+                try:
+                    sock.disconnect(jobiface.port_dict[url_key])
+                    sock.close(linger=0)
+                finally:
+                    lock.release()
+            except Exception:
+                pass
 
     # def init(jobiface):
     #     # Starts several new processes
@@ -877,16 +926,64 @@ class JobInterface(object):
     #     # Does not create a new process, but connects sockets on this process
     #     jobiface.initialize_client_thread()
 
+    def close_client_sockets(jobiface):
+        """Close ZMQ client sockets and context (call before fork)."""
+        if jobiface.engine_recieve_socket is not None:
+            jobiface.engine_recieve_socket.close()
+            jobiface.engine_recieve_socket = None
+        if jobiface.collect_recieve_socket is not None:
+            jobiface.collect_recieve_socket.close()
+            jobiface.collect_recieve_socket = None
+        zmq_ctx = getattr(jobiface, '_zmq_ctx', None)
+        if zmq_ctx is not None:
+            zmq_ctx.term()
+            jobiface._zmq_ctx = None
+
+    def _rebuild_sockets(jobiface):
+        """Recreate whichever ZMQ sockets are missing (None).
+
+        Called by _ensure_sockets after a timeout-triggered reset destroyed
+        one socket, or on first use when both are None.  Only touches the
+        socket(s) that need rebuilding; leaves the other untouched.
+        """
+        # Ensure we have a ZMQ context
+        if getattr(jobiface, '_zmq_ctx', None) is None:
+            jobiface._zmq_ctx = zmq.Context()
+
+        if jobiface.engine_recieve_socket is None:
+            jobiface.engine_recieve_socket = jobiface._zmq_ctx.socket(zmq.DEALER)
+            jobiface.engine_recieve_socket.setsockopt_string(
+                zmq.IDENTITY, 'client{}.engine.DEALER'.format(jobiface.id_)
+            )
+            jobiface.engine_recieve_socket.setsockopt(zmq.RCVTIMEO, 30000)
+            jobiface.engine_recieve_socket.setsockopt(zmq.LINGER, 0)
+            jobiface.engine_recieve_socket.connect(jobiface.port_dict['engine_pull_url'])
+
+        if jobiface.collect_recieve_socket is None:
+            jobiface.collect_recieve_socket = jobiface._zmq_ctx.socket(zmq.DEALER)
+            jobiface.collect_recieve_socket.setsockopt_string(
+                zmq.IDENTITY, 'client{}.collect.DEALER'.format(jobiface.id_)
+            )
+            jobiface.collect_recieve_socket.setsockopt(zmq.RCVTIMEO, 30000)
+            jobiface.collect_recieve_socket.setsockopt(zmq.LINGER, 0)
+            jobiface.collect_recieve_socket.connect(jobiface.port_dict['collect_pull_url'])
+
     def initialize_client_thread(jobiface):
         """
-        Creates a ZMQ object in this thread. This talks to background processes.
+        Creates ZMQ sockets for talking to background engine/collector processes.
+        Used during startup (pre-fork) for one-time initialization tasks.
+        After fork(), _rebuild_sockets() is used instead.
         """
         if jobiface.verbose:
             print('Initializing JobInterface')
-        jobiface.engine_recieve_socket = ctx.socket(zmq.DEALER)  # CHECK2 - REQ
+        # Create a fresh ZMQ context for this process (critical after fork)
+        jobiface._zmq_ctx = zmq.Context()
+        jobiface.engine_recieve_socket = jobiface._zmq_ctx.socket(zmq.DEALER)
         jobiface.engine_recieve_socket.setsockopt_string(
             zmq.IDENTITY, 'client{}.engine.DEALER'.format(jobiface.id_)
         )
+        jobiface.engine_recieve_socket.setsockopt(zmq.RCVTIMEO, 30000)
+        jobiface.engine_recieve_socket.setsockopt(zmq.LINGER, 0)
         jobiface.engine_recieve_socket.connect(jobiface.port_dict['engine_pull_url'])
         if jobiface.verbose:
             print(
@@ -895,10 +992,12 @@ class JobInterface(object):
                 )
             )
 
-        jobiface.collect_recieve_socket = ctx.socket(zmq.DEALER)  # CHECK2 - REQ
+        jobiface.collect_recieve_socket = jobiface._zmq_ctx.socket(zmq.DEALER)
         jobiface.collect_recieve_socket.setsockopt_string(
             zmq.IDENTITY, 'client{}.collect.DEALER'.format(jobiface.id_)
         )
+        jobiface.collect_recieve_socket.setsockopt(zmq.RCVTIMEO, 30000)
+        jobiface.collect_recieve_socket.setsockopt(zmq.LINGER, 0)
         jobiface.collect_recieve_socket.connect(jobiface.port_dict['collect_pull_url'])
         if jobiface.verbose:
             print(
@@ -909,6 +1008,8 @@ class JobInterface(object):
     def queue_interrupted_jobs(jobiface):
         import tqdm
 
+        from wbia.web.job_store import JobStore
+
         ibs = jobiface.ibs
 
         if ibs is not None:
@@ -917,114 +1018,119 @@ class JobInterface(object):
             shelve_archive_path = '{}_ARCHIVE'.format(shelve_path)
             ut.ensuredir(shelve_archive_path)
 
-            record_filepath_list = _get_engine_job_paths(ibs)
+            # Open a JobStore for startup recovery (read + batch register).
+            # The collector will open its own instance once it finishes starting.
+            job_store = JobStore(join(shelve_path, 'jobs.db'))
+            try:
+                record_filepath_list = _get_engine_job_paths(ibs)
 
-            num_records = len(record_filepath_list)
-            print('Reloading %d engine jobs...' % (num_records,))
+                num_records = len(record_filepath_list)
+                print('Reloading %d engine jobs...' % (num_records,))
 
-            shelve_input_filepath_list = []
-            shelve_output_filepath_list = []
-            for record_filepath in record_filepath_list:
-                jobid = splitext(basename(record_filepath))[0]
-                shelve_input_filepath, shelve_output_filepath = get_shelve_filepaths(
-                    ibs, jobid
+                arg_iter = list(
+                    zip(
+                        record_filepath_list,
+                        [shelve_path] * num_records,
+                        [shelve_archive_path] * num_records,
+                        [jobiface.id_] * num_records,
+                        [job_store] * num_records,
+                    )
                 )
-                shelve_input_filepath_list.append(shelve_input_filepath)
-                shelve_output_filepath_list.append(shelve_output_filepath)
-
-            arg_iter = list(
-                zip(
-                    record_filepath_list,
-                    shelve_input_filepath_list,
-                    shelve_output_filepath_list,
-                    [shelve_path] * num_records,
-                    [shelve_archive_path] * num_records,
-                    [jobiface.id_] * num_records,
-                )
-            )
-            if len(arg_iter) > 0:
-                values_list = ut.util_parallel.generate2(
-                    initialize_process_record, arg_iter
-                )
-                values_list = list(values_list)
-            else:
+                # Run sequentially — JobStore is not fork-safe
                 values_list = []
+                for args in arg_iter:
+                    values_list.append(initialize_process_record(*args))
 
-            print('Processed %d records' % (len(values_list),))
+                print('Processed %d records' % (len(values_list),))
 
-            restart_jobcounter_list = []
-            restart_jobid_list = []
-            restart_request_list = []
+                restart_jobcounter_list = []
+                restart_jobid_list = []
+                restart_request_list = []
 
-            global_jobcounter = 0
-            num_registered, num_restarted = 0, 0
-            num_completed, num_archived, num_suppressed, num_corrupted = 0, 0, 0, 0
+                global_jobcounter = 0
+                num_registered, num_restarted = 0, 0
+                num_completed, num_archived, num_suppressed, num_corrupted = 0, 0, 0, 0
 
-            for values in tqdm.tqdm(values_list):
-                (
-                    jobcounter,
-                    jobid,
-                    engine_request,
-                    archived,
-                    completed,
-                    suppressed,
-                    corrupted,
-                ) = values
+                # Build batch of jobs to register
+                batch_register = []  # list of (jobid, status, jobcounter)
 
-                if archived:
-                    assert engine_request is None
-                    num_archived += 1
-                    continue
+                for values in tqdm.tqdm(values_list):
+                    (
+                        jobcounter,
+                        jobid,
+                        engine_request,
+                        archived,
+                        completed,
+                        suppressed,
+                        corrupted,
+                    ) = values
 
-                if jobcounter is not None:
-                    global_jobcounter = max(global_jobcounter, jobcounter)
+                    if archived:
+                        assert engine_request is None
+                        num_archived += 1
+                        continue
 
-                if engine_request is None:
-                    assert not archived
-                    if completed:
-                        status = 'completed'
-                        num_completed += 1
-                    elif suppressed:
-                        status = 'suppressed'
-                        num_suppressed += 1
+                    if jobcounter is not None:
+                        global_jobcounter = max(global_jobcounter, jobcounter)
+
+                    if engine_request is None:
+                        assert not archived
+                        if completed:
+                            status = 'completed'
+                            num_completed += 1
+                        elif suppressed:
+                            status = 'suppressed'
+                            num_suppressed += 1
+                        else:
+                            status = 'corrupted'
+                            num_corrupted += 1
+
+                        batch_register.append((jobid, status, jobcounter))
                     else:
-                        status = 'corrupted'
-                        num_corrupted += 1
+                        num_restarted += 1
+                        restart_jobcounter_list.append(jobcounter)
+                        restart_jobid_list.append(jobid)
+                        restart_request_list.append(engine_request)
 
-                    reply_notify = {
-                        'jobid': jobid,
-                        'status': status,
-                        'action': 'register',
-                    }
-                    print('Sending register: {!r}'.format(reply_notify))
-                    jobiface.collect_recieve_socket.send_json(reply_notify)
-                    reply = jobiface.collect_recieve_socket.recv_json()
-                    jobid_ = reply['jobid']
-                    assert jobid_ == jobid
-                else:
-                    num_restarted += 1
-                    restart_jobcounter_list.append(jobcounter)
-                    restart_jobid_list.append(jobid)
-                    restart_request_list.append(engine_request)
+                    num_registered += 1
 
-                num_registered += 1
+                assert num_restarted == len(restart_jobcounter_list)
 
-            assert num_restarted == len(restart_jobcounter_list)
+                # Write directly to the local JobStore instead of routing
+                # through ZMQ.  The collector subprocess may still be starting
+                # (loading the database), so a ZMQ send here can easily time out
+                # with thousands of legacy jobs.  SQLite WAL mode allows this
+                # concurrent writer safely.
+                if batch_register:
+                    print('Batch registering %d jobs directly to SQLite...' % (len(batch_register),))
+                    job_store.register_batch([
+                        {'jobid': jid, 'status': st, 'jobcounter': jc}
+                        for jid, st, jc in batch_register
+                    ])
+                    print('Batch register complete: %d jobs registered' % (len(batch_register),))
 
-            print('Registered %d jobs...' % (num_registered,))
-            print('\t %d completed jobs' % (num_completed,))
-            print('\t %d restarted jobs' % (num_restarted,))
-            print('\t %d suppressed jobs' % (num_suppressed,))
-            print('\t %d corrupted jobs' % (num_corrupted,))
-            print('Archived %d jobs...' % (num_archived,))
+                print('Registered %d jobs...' % (num_registered,))
+                print('\t %d completed jobs' % (num_completed,))
+                print('\t %d restarted jobs' % (num_restarted,))
+                print('\t %d suppressed jobs' % (num_suppressed,))
+                print('\t %d corrupted jobs' % (num_corrupted,))
+                print('Archived %d jobs...' % (num_archived,))
+
+                # Reclaim space from archived jobs
+                if num_archived > 0:
+                    try:
+                        job_store.vacuum()
+                    except Exception:
+                        pass
+            finally:
+                job_store.close()
 
             # Update the jobcounter to be up to date
             update_notify = {
                 '__set_jobcounter__': global_jobcounter,
             }
             print('Updating completed job counter: {!r}'.format(update_notify))
-            jobiface.engine_recieve_socket.send_json(update_notify)
-            reply = jobiface.engine_recieve_socket.recv_json()
+            reply = jobiface._engine_request(update_notify)
             jobcounter_ = reply['jobcounter']
             assert jobcounter_ == global_jobcounter
 
@@ -1037,8 +1143,7 @@ class JobInterface(object):
             zipped = ut.take(zipped, index_list)
 
             for jobcounter, jobid, engine_request in tqdm.tqdm(zipped):
-                jobiface.engine_recieve_socket.send_json(engine_request)
-                reply = jobiface.engine_recieve_socket.recv_json()
+                reply = jobiface._engine_request(engine_request)
                 jobcounter_ = reply['jobcounter']
                 jobid_ = reply['jobid']
                 assert jobcounter_ == jobcounter
@@ -1117,9 +1222,8 @@ class JobInterface(object):
         if True or jobiface.verbose >= 2:
             print('Queue job: {}'.format(ut.repr2(engine_request, truncate=True)))
 
-        # Send request to job
-        jobiface.engine_recieve_socket.send_json(engine_request)
-        reply_notify = jobiface.engine_recieve_socket.recv_json()
+        # Send request to job engine
+        reply_notify = jobiface._engine_request(engine_request)
         print('reply_notify = {!r}'.format(reply_notify))
         jobid_ = reply_notify['jobid']
 
@@ -1158,50 +1262,35 @@ class JobInterface(object):
             print('----')
             print('Request list of job ids')
         pair_msg = dict(action='job_id_list')
-        # CALLS: collector_request_status
-        jobiface.collect_recieve_socket.send_json(pair_msg)
-        reply = jobiface.collect_recieve_socket.recv_json()
-        return reply
+        return jobiface._collect_request(pair_msg)
 
     def get_job_status(jobiface, jobid):
         if jobiface.verbose >= 1:
             print('----')
             print('Request status of jobid={!r}'.format(jobid))
         pair_msg = dict(action='job_status', jobid=jobid)
-        # CALLS: collector_request_status
-        jobiface.collect_recieve_socket.send_json(pair_msg)
-        reply = jobiface.collect_recieve_socket.recv_json()
-        return reply
+        return jobiface._collect_request(pair_msg)
 
-    def get_job_status_dict(jobiface):
+    def get_job_status_dict(jobiface, limit=0):
         if False:  # jobiface.verbose >= 1:
             print('----')
             print('Request list of job ids')
-        pair_msg = dict(action='job_status_dict')
-        # CALLS: collector_request_status
-        jobiface.collect_recieve_socket.send_json(pair_msg)
-        reply = jobiface.collect_recieve_socket.recv_json()
-        return reply
+        pair_msg = dict(action='job_status_dict', limit=limit)
+        return jobiface._collect_request(pair_msg)
 
     def get_job_metadata(jobiface, jobid):
         if jobiface.verbose >= 1:
             print('----')
             print('Request metadata of jobid={!r}'.format(jobid))
         pair_msg = dict(action='job_input', jobid=jobid)
-        # CALLS: collector_request_metadata
-        jobiface.collect_recieve_socket.send_json(pair_msg)
-        reply = jobiface.collect_recieve_socket.recv_json()
-        return reply
+        return jobiface._collect_request(pair_msg)
 
     def get_job_result(jobiface, jobid):
         if jobiface.verbose >= 1:
             print('----')
             print('Request result of jobid={!r}'.format(jobid))
         pair_msg = dict(action='job_result', jobid=jobid)
-        # CALLER: collector_request_result
-        jobiface.collect_recieve_socket.send_json(pair_msg)
-        reply = jobiface.collect_recieve_socket.recv_json()
-        return reply
+        return jobiface._collect_request(pair_msg)
 
     def get_unpacked_result(jobiface, jobid):
         reply = jobiface.get_job_result(jobid)
@@ -1256,14 +1345,14 @@ def collect_queue_loop(port_dict):
     if VERBOSE_JOBS:
         print('Init make_queue_loop: name={!r}'.format(name))
     # bind the client dealer to the queue router
-    recieve_socket = ctx.socket(zmq.ROUTER)  # CHECKED - ROUTER
+    recieve_socket = _get_global_zmq_ctx().socket(zmq.ROUTER)  # CHECKED - ROUTER
     recieve_socket.setsockopt_string(zmq.IDENTITY, 'queue.' + name + '.' + 'ROUTER')
     recieve_socket.bind(interface_pull)
     if VERBOSE_JOBS:
         print('bind {}_url1 = {!r}'.format(name, interface_pull))
 
     # bind the server router to the queue dealer
-    send_socket = ctx.socket(zmq.DEALER)  # CHECKED - DEALER
+    send_socket = _get_global_zmq_ctx().socket(zmq.DEALER)  # CHECKED - DEALER
     send_socket.setsockopt_string(zmq.IDENTITY, 'queue.' + name + '.' + 'DEALER')
     send_socket.bind(interface_push)
     if VERBOSE_JOBS:
@@ -1305,7 +1394,7 @@ def engine_queue_loop(port_dict, engine_lanes):
     print('Init specialized make_queue_loop: name={!r}'.format(name))
 
     # bind the client dealer to the queue router
-    engine_receive_socket = ctx.socket(zmq.ROUTER)  # CHECK2 - REP
+    engine_receive_socket = _get_global_zmq_ctx().socket(zmq.ROUTER)  # CHECK2 - REP
     engine_receive_socket.setsockopt_string(
         zmq.IDENTITY, 'special_queue.' + name + '.' + 'ROUTER'
     )
@@ -1316,7 +1405,7 @@ def engine_queue_loop(port_dict, engine_lanes):
     # bind the server router to the queue dealer
     engine_send_socket_dict = {}
     for lane in interface_engine_push_dict:
-        engine_send_socket = ctx.socket(zmq.DEALER)  # CHECKED - DEALER
+        engine_send_socket = _get_global_zmq_ctx().socket(zmq.DEALER)  # CHECKED - DEALER
         engine_send_socket.setsockopt_string(
             zmq.IDENTITY, 'special_queue.' + lane + '.' + name + '.' + 'DEALER'
         )
@@ -1329,7 +1418,7 @@ def engine_queue_loop(port_dict, engine_lanes):
             )
         engine_send_socket_dict[lane] = engine_send_socket
 
-    collect_recieve_socket = ctx.socket(zmq.DEALER)  # CHECKED - DEALER
+    collect_recieve_socket = _get_global_zmq_ctx().socket(zmq.DEALER)  # CHECKED - DEALER
     collect_recieve_socket.setsockopt_string(zmq.IDENTITY, queue_name + '.collect.DEALER')
     collect_recieve_socket.connect(interface_collect_pull)
     if VERBOSE_JOBS:
@@ -1578,14 +1667,14 @@ def engine_loop(id_, port_dict, dbdir, containerized, lane):
 
     assert dbdir is not None
 
-    engine_send_sock = ctx.socket(zmq.ROUTER)  # CHECKED - ROUTER
+    engine_send_sock = _get_global_zmq_ctx().socket(zmq.ROUTER)  # CHECKED - ROUTER
     engine_send_sock.setsockopt_string(
         zmq.IDENTITY,
         'engine.{}.{}'.format(lane, id_),
     )
     engine_send_sock.connect(interface_engine_push)
 
-    collect_recieve_socket = ctx.socket(zmq.DEALER)
+    collect_recieve_socket = _get_global_zmq_ctx().socket(zmq.DEALER)
     collect_recieve_socket.setsockopt_string(
         zmq.IDENTITY,
         'engine.{}.{}.collect.DEALER'.format(lane, id_),
@@ -1795,12 +1884,16 @@ def on_engine_request(
 
 def collector_loop(port_dict, dbdir, containerized):
     """
-    Service that stores completed algorithm results
+    Service that stores completed algorithm results.
+
+    Uses SQLite WAL-mode (via JobStore) instead of per-job shelve files.
     """
     import wbia
 
+    from wbia.web.job_store import JobStore
+
     print = partial(ut.colorprint, color='yellow')
-    collect_rout_sock = ctx.socket(zmq.ROUTER)  # CHECK2 - PULL
+    collect_rout_sock = _get_global_zmq_ctx().socket(zmq.ROUTER)  # CHECK2 - PULL
     collect_rout_sock.setsockopt_string(zmq.IDENTITY, 'collect.ROUTER')
     collect_rout_sock.connect(port_dict['collect_push_url'])
     if VERBOSE_JOBS:
@@ -1812,22 +1905,18 @@ def collector_loop(port_dict, dbdir, containerized):
     shelve_path = ibs.get_shelves_path()
     ut.ensuredir(shelve_path)
 
-    collector_data = {}
+    job_store = JobStore(join(shelve_path, 'jobs.db'))
 
     try:
         while True:
-            # several callers here
-            # CALLER: collector_notify
-            # CALLER: collector_store
-            # CALLER: collector_request_status
-            # CALLER: collector_request_metadata
-            # CALLER: collector_request_result
             idents, collect_request = rcv_multipart_json(collect_rout_sock, print=print)
+            _action = collect_request.get('action', 'unknown') if collect_request else 'unknown'
+            _t0 = time.monotonic()
             try:
                 reply = on_collect_request(
                     ibs,
                     collect_request,
-                    collector_data,
+                    job_store,
                     shelve_path,
                     containerized=containerized,
                 )
@@ -1839,21 +1928,18 @@ def collector_loop(port_dict, dbdir, containerized):
                 print(traceback.format_exc())
                 reply = {}
 
+            _elapsed = time.monotonic() - _t0
+            if _elapsed > 2.0:
+                print('SLOW collector action=%r took %.1fs' % (_action, _elapsed))
+
             send_multipart_json(collect_rout_sock, idents, reply)
 
             idents = None
             collect_request = None
-
-            # Explicitly release Python memory
-            try:
-                import gc
-
-                gc.collect()
-            except Exception:
-                pass
     except KeyboardInterrupt:
         print('Caught ctrl+c in collector loop. Gracefully exiting')
 
+    job_store.close()
     collect_rout_sock.disconnect(port_dict['collect_push_url'])
     collect_rout_sock.close()
 
@@ -1861,24 +1947,87 @@ def collector_loop(port_dict, dbdir, containerized):
         print('Exiting collector')
 
 
+def _fire_callback(callback_url, callback_method, data_dict, print=print):
+    """Send a job-completion callback in a daemon thread.
+
+    Runs the HTTP request off the collector's main loop so that slow or
+    unreachable callback targets never block ZMQ message processing.
+    """
+    import requests
+
+    _CB_TIMEOUT = (10, 30)  # (connect, read) seconds
+
+    jobid = data_dict.get('jobid', '?')
+
+    def _do_callback():
+        try:
+            print(
+                'Attempting callback for jobid=%s to %r via %s'
+                % (jobid, callback_url, callback_method)
+            )
+
+            if callback_method == 'POST':
+                if callback_url.startswith('houston+'):
+                    response = call_houston(
+                        callback_url,
+                        method='POST',
+                        data=ut.to_json(data_dict),
+                        headers={'Content-Type': 'application/json'},
+                        timeout=_CB_TIMEOUT,
+                    )
+                else:
+                    response = requests.post(callback_url, data=data_dict, timeout=_CB_TIMEOUT)
+            elif callback_method == 'GET':
+                if callback_url.startswith('houston+'):
+                    response = call_houston(
+                        callback_url, method='GET', params=data_dict,
+                        timeout=_CB_TIMEOUT,
+                    )
+                else:
+                    response = requests.get(callback_url, params=data_dict, timeout=_CB_TIMEOUT)
+            elif callback_method == 'PUT':
+                if callback_url.startswith('houston+'):
+                    response = call_houston(
+                        callback_url,
+                        method='PUT',
+                        data=ut.to_json(data_dict),
+                        headers={'Content-Type': 'application/json'},
+                        timeout=_CB_TIMEOUT,
+                    )
+                else:
+                    response = requests.put(callback_url, data=data_dict, timeout=_CB_TIMEOUT)
+            else:
+                raise RuntimeError('Unsupported callback method: {!r}'.format(callback_method))
+
+            status_code = getattr(response, 'status_code', None)
+            print(
+                'Callback completed for jobid=%s — HTTP %s' % (jobid, status_code)
+            )
+            if status_code is not None and status_code >= 400:
+                try:
+                    body = response.text[:500]
+                except Exception:
+                    body = '(unreadable)'
+                print(
+                    'Callback WARNING for jobid=%s: HTTP %s — %s'
+                    % (jobid, status_code, body)
+                )
+        except Exception as ex:
+            import traceback
+            print(
+                'Callback FAILED for jobid=%s to %r: %s\n%s'
+                % (jobid, callback_url, ex, traceback.format_exc())
+            )
+
+    t = threading.Thread(target=_do_callback, daemon=True)
+    t.start()
+
+
 def _timestamp():
     timezone = pytz.timezone(TIMESTAMP_TIMEZONE)
     now = datetime.now(timezone)
     timestamp = now.strftime(TIMESTAMP_FMTSTR)
     return timestamp
-
-
-def invalidate_global_cache(jobid):
-    global JOB_STATUS_CACHE
-    JOB_STATUS_CACHE.pop(jobid, None)
-
-
-def get_collector_shelve_filepaths(collector_data, jobid):
-    if jobid is None:
-        return None, None
-    shelve_input_filepath = collector_data.get(jobid, {}).get('input', None)
-    shelve_output_filepath = collector_data.get(jobid, {}).get('output', None)
-    return shelve_input_filepath, shelve_output_filepath
 
 
 def convert_to_date(timestamp):
@@ -1906,11 +2055,12 @@ def calculate_timedelta(start, end):
 
 
 def on_collect_request(
-    ibs, collect_request, collector_data, shelve_path, containerized=False
+    ibs, collect_request, job_store, shelve_path, containerized=False
 ):
-    """Run whenever the collector recieves a message"""
-    import requests
+    """Run whenever the collector receives a message.
 
+    *job_store* is a :class:`wbia.web.job_store.JobStore` (SQLite WAL).
+    """
     action = collect_request.get('action', None)
     jobid = collect_request.get('jobid', None)
     status = collect_request.get('status', None)
@@ -1920,7 +2070,7 @@ def on_collect_request(
         'jobid': jobid,
     }
 
-    # Ensure we have a collector record for the jobid
+    # Validate jobid
     if jobid is not None:
         try:
             assert isinstance(jobid, str)
@@ -1936,190 +2086,114 @@ def on_collect_request(
             reply['status'] = 'error'
             return reply
 
-        if jobid not in collector_data:
-            collector_data[jobid] = {
-                'status': None,
-                'input': None,
-                'output': None,
-            }
-        runtime_lock_filepath = join(shelve_path, '{}.lock'.format(jobid))
-    else:
-        runtime_lock_filepath = None
-
-    args = get_collector_shelve_filepaths(collector_data, jobid)
-    collector_shelve_input_filepath, collector_shelve_output_filepath = args
-
     if jobid is not None:
         print(
             'on_collect_request action = %r, jobid = %r, status = %r'
-            % (
-                action,
-                jobid,
-                status,
-            )
+            % (action, jobid, status)
         )
 
     if action == 'notification':
-        assert None not in [jobid, runtime_lock_filepath]
+        assert jobid is not None
 
-        # received
-        # accepted
-        # queued
-        # working
-        # publishing
-        # completed
-        # exception
-        # suppressed
-        # corrupted
+        # Ensure row exists
+        job_store.ensure_job(jobid, status)
 
-        current_status = collector_data[jobid].get('status', None)
+        current_status = job_store.get_status(jobid)
         print(
             'Updating jobid = {!r} status {!r} -> {!r}'.format(
                 jobid, current_status, status
             )
         )
-        collector_data[jobid]['status'] = status
-
-        print('Notify %s' % ut.repr3(collector_data[jobid]))
-        invalidate_global_cache(jobid)
-
-        if status == 'received':
-            ut.touch(runtime_lock_filepath)
+        job_store.update_status(jobid, status)
 
         if status == 'completed':
-            if exists(runtime_lock_filepath):
-                ut.delete(runtime_lock_filepath)
-
-            # Mark the engine request as finished
+            # Mark the engine request .pkl as finished — do it in a
+            # background thread so disk I/O doesn't block the collector.
             record_filename = '{}.pkl'.format(jobid)
             record_filepath = join(shelve_path, record_filename)
-            record = ut.load_cPkl(record_filepath, verbose=False)
-            record['completed'] = True
-            ut.save_cPkl(record_filepath, record, verbose=False)
-            record = None
 
-        # Update relevant times in the shelf
-        if collector_shelve_input_filepath is None:
-            metadata = None
-        else:
-            metadata = get_shelve_value(collector_shelve_input_filepath, 'metadata')
+            def _mark_pkl_completed(_path=record_filepath):
+                try:
+                    if exists(_path):
+                        _rec = ut.load_cPkl(_path, verbose=False)
+                        _rec['completed'] = True
+                        ut.save_cPkl(_path, _rec, verbose=False)
+                except Exception:
+                    pass
 
-        if metadata is not None:
-            times = metadata.get('times', {})
-            times['updated'] = _timestamp()
+            threading.Thread(target=_mark_pkl_completed, daemon=True).start()
 
-            if status == 'working':
-                times['started'] = _timestamp()
+        # Update times
+        times = job_store.get_times(jobid)
+        times['updated'] = _timestamp()
 
-            if status == 'completed':
-                times['completed'] = _timestamp()
-
-            # Calculate runtime
-            received = times.get('received', None)
-            started = times.get('started', None)
-            completed = times.get('completed', None)
-            runtime = times.get('runtime', None)
-            turnaround = times.get('turnaround', None)
-
-            if None not in [started, completed] and runtime is None:
-                hours, minutes, seconds, total_seconds = calculate_timedelta(
-                    started, completed
-                )
-                args = (
-                    hours,
-                    minutes,
-                    seconds,
-                    total_seconds,
-                )
-                times['runtime'] = '%d hours %d min. %s sec. (total: %d sec.)' % args
-                times['runtime_sec'] = total_seconds
-
-            if None not in [received, completed] and turnaround is None:
-                hours, minutes, seconds, total_seconds = calculate_timedelta(
-                    received, completed
-                )
-                args = (
-                    hours,
-                    minutes,
-                    seconds,
-                    total_seconds,
-                )
-                times['turnaround'] = '%d hours %d min. %s sec. (total: %d sec.)' % args
-                times['turnaround_sec'] = total_seconds
-
-            metadata['times'] = times
-            set_shelve_value(collector_shelve_input_filepath, 'metadata', metadata)
-
-            metadata = None  # Release memory
-
-    elif action == 'register':
-        assert None not in [jobid]
-
-        invalidate_global_cache(jobid)
-
-        shelve_input_filepath, shelve_output_filepath = get_shelve_filepaths(ibs, jobid)
-        metadata = get_shelve_value(shelve_input_filepath, 'metadata')
-        engine_result = get_shelve_value(shelve_output_filepath, 'result')
+        if status == 'working':
+            times['started'] = _timestamp()
 
         if status == 'completed':
-            # Ensure we can read the data we expect out of a completed job
-            if None in [metadata, engine_result]:
+            times['completed'] = _timestamp()
+
+        # Calculate runtime
+        received = times.get('received', None)
+        started = times.get('started', None)
+        completed = times.get('completed', None)
+        runtime = times.get('runtime', None)
+        turnaround = times.get('turnaround', None)
+
+        if None not in [started, completed] and runtime is None:
+            hours, minutes, seconds, total_seconds = calculate_timedelta(
+                started, completed
+            )
+            times['runtime'] = '%d hours %d min. %s sec. (total: %d sec.)' % (
+                hours, minutes, seconds, total_seconds,
+            )
+            times['runtime_sec'] = total_seconds
+
+        if None not in [received, completed] and turnaround is None:
+            hours, minutes, seconds, total_seconds = calculate_timedelta(
+                received, completed
+            )
+            times['turnaround'] = '%d hours %d min. %s sec. (total: %d sec.)' % (
+                hours, minutes, seconds, total_seconds,
+            )
+            times['turnaround_sec'] = total_seconds
+
+        job_store.update_times(jobid, times)
+
+    elif action == 'register':
+        assert jobid is not None
+
+        metadata = job_store.get_metadata(jobid)
+        result = job_store.get_result(jobid)
+
+        if status == 'completed':
+            if None in [metadata, result]:
                 status = 'corrupted'
 
-        collector_data[jobid] = {
-            'status': status,
-            'input': shelve_input_filepath,
-            'output': shelve_output_filepath,
-        }
-        print('Register %s' % ut.repr3(collector_data[jobid]))
-
-        metadata, engine_result = None, None  # Release memory
+        _jc = metadata.get('jobcounter', -1) if metadata else -1
+        job_store.register_job(jobid, status, _jc)
+        print('Register jobid=%s status=%s jobcounter=%s' % (jobid, status, _jc))
 
     elif action == 'metadata':
-        invalidate_global_cache(jobid)
-
-        # From the Engine
         metadata = collect_request.get('metadata', None)
-
-        shelve_input_filepath, shelve_output_filepath = get_shelve_filepaths(ibs, jobid)
-        collector_data[jobid]['input'] = shelve_input_filepath
-
-        set_shelve_value(shelve_input_filepath, 'metadata', metadata)
-
-        print('Stored Metadata %s' % ut.repr3(collector_data[jobid]))
-
-        metadata = None  # Release memory
+        job_store.store_metadata(jobid, metadata)
+        print('Stored Metadata for jobid=%s' % (jobid,))
+        metadata = None
 
     elif action == 'store':
-        invalidate_global_cache(jobid)
-
-        # From the Engine
         engine_result = collect_request.get('engine_result', None)
         callback_url = collect_request.get('callback_url', None)
         callback_method = collect_request.get('callback_method', None)
         callback_detailed = collect_request.get('callback_detailed', False)
 
-        # Get the engine result jobid
         jobid = engine_result.get('jobid', jobid)
-        assert jobid in collector_data
 
-        shelve_input_filepath, shelve_output_filepath = get_shelve_filepaths(ibs, jobid)
-        collector_data[jobid]['output'] = shelve_output_filepath
-
-        set_shelve_value(shelve_output_filepath, 'result', engine_result)
-
-        print('Stored Result %s' % ut.repr3(collector_data[jobid]))
+        job_store.store_result(jobid, engine_result)
+        print('Stored Result for jobid=%s' % (jobid,))
 
         engine_result = None  # Release memory
 
         if callback_url is not None:
-            # We are using localhost as the name of the houston nginx service
-            # so we need localhost to work as is, so commenting out the code
-            # below:
-            #
-            # if containerized:
-            #     callback_url = callback_url.replace('://localhost/', '://wildbook:8080/')
-
             if callback_method is None:
                 callback_method = 'POST'
 
@@ -2127,183 +2201,64 @@ def on_collect_request(
             message = 'callback_method {!r} unsupported'.format(callback_method)
             assert callback_method in ['POST', 'GET', 'PUT'], message
 
-            try:
-                data_dict = {'jobid': jobid}
+            # Build the callback payload on the collector thread (needs
+            # job_store access), then fire the HTTP request in a daemon
+            # thread so the collector loop is never blocked by network I/O.
+            data_dict = {'jobid': jobid}
 
-                if callback_detailed:
-                    shelve_value = get_shelve_value(shelve_output_filepath, 'result')
-                    data_dict['status'] = shelve_value['exec_status']
-                    data_dict['json_result'] = ut.from_json(shelve_value['json_result'])
-                    shelve_value = None  # Release memory
+            if callback_detailed:
+                result_data = job_store.get_result(jobid)
+                if result_data is not None:
+                    data_dict['status'] = result_data['exec_status']
+                    data_dict['json_result'] = ut.from_json(result_data['json_result'])
+                result_data = None
 
-                args = (
-                    callback_url,
-                    callback_method,
-                    data_dict,
-                )
-                print(
-                    'Attempting job completion callback to %r\n\tHTTP Method: %r\n\tData Payload: %r'
-                    % args
-                )
-
-                # Perform callback
-                if callback_method == 'POST':
-                    if callback_url.startswith('houston+'):
-                        response = call_houston(
-                            callback_url,
-                            method='POST',
-                            data=ut.to_json(data_dict),
-                            headers={'Content-Type': 'application/json'},
-                        )
-                    else:
-                        response = requests.post(callback_url, data=data_dict)
-                elif callback_method == 'GET':
-                    if callback_url.startswith('houston+'):
-                        response = call_houston(
-                            callback_url, method='GET', params=data_dict
-                        )
-                    else:
-                        response = requests.get(callback_url, params=data_dict)
-                elif callback_method == 'PUT':
-                    if callback_url.startswith('houston+'):
-                        response = call_houston(
-                            callback_url,
-                            method='PUT',
-                            data=ut.to_json(data_dict),
-                            headers={'Content-Type': 'application/json'},
-                        )
-                    else:
-                        response = requests.put(callback_url, data=data_dict)
-                else:
-                    raise RuntimeError()
-
-                # Check response
-                try:
-                    text = unicode(response.text).encode('utf-8')  # NOQA
-                except Exception:
-                    text = None
-
-                args = (
-                    response,
-                    text,
-                )
-                print('Callback completed...\n\tResponse: %r\n\tText: %r' % args)
-            except Exception:
-                print('Callback FAILED!')
+            _fire_callback(callback_url, callback_method, data_dict, print)
 
     elif action == 'job_status':
-        reply['jobstatus'] = collector_data.get(jobid, {}).get('status', 'unknown')
+        reply['jobstatus'] = job_store.get_status(jobid) or 'unknown'
 
     elif action == 'job_status_dict':
-        json_result = {}
-
-        for jobid in collector_data:
-
-            if jobid in JOB_STATUS_CACHE:
-                job_status_data = JOB_STATUS_CACHE.get(jobid, None)
-            else:
-                status = collector_data[jobid]['status']
-
-                shelve_input_filepath, shelve_output_filepath = get_shelve_filepaths(
-                    ibs, jobid
-                )
-                metadata = get_shelve_value(shelve_input_filepath, 'metadata')
-
-                cache = True
-                if metadata is None:
-                    if status in ['corrupted']:
-                        status = 'corrupted'
-                    elif status in ['suppressed']:
-                        status = 'suppressed'
-                    elif status in ['completed']:
-                        status = 'corrupted'
-                    else:
-                        # status = 'pending'
-                        cache = False
-                    metadata = {
-                        'jobcounter': -1,
-                    }
-
-                times = metadata.get('times', {})
-                request = metadata.get('request', {})
-
-                # Support legacy jobs
-                if request is None:
-                    request = {}
-
-                job_status_data = {
-                    'status': status,
-                    'jobcounter': metadata.get('jobcounter', None),
-                    'action': metadata.get('action', None),
-                    'endpoint': request.get('endpoint', None),
-                    'function': request.get('function', None),
-                    'time_received': times.get('received', None),
-                    'time_started': times.get('started', None),
-                    'time_runtime': times.get('runtime', None),
-                    'time_updated': times.get('updated', None),
-                    'time_completed': times.get('completed', None),
-                    'time_turnaround': times.get('turnaround', None),
-                    'time_runtime_sec': times.get('runtime_sec', None),
-                    'time_turnaround_sec': times.get('turnaround_sec', None),
-                    'lane': metadata.get('lane', None),
-                }
-                if cache:
-                    JOB_STATUS_CACHE[jobid] = job_status_data
-
-            json_result[jobid] = job_status_data
-
-        reply['json_result'] = json_result
-
-        metadata = None  # Release memory
+        request_limit = collect_request.get('limit', 0)
+        reply['json_result'] = job_store.get_job_status_dict(limit=request_limit)
 
     elif action == 'job_id_list':
-        reply['jobid_list'] = sorted(list(collector_data.keys()))
+        reply['jobid_list'] = job_store.get_job_ids()
 
     elif action == 'job_input':
-        if jobid not in collector_data:
+        if not job_store.job_exists(jobid):
             reply['status'] = 'invalid'
-            metadata = None
+            reply['json_result'] = None
         else:
-            metadata = get_shelve_value(collector_shelve_input_filepath, 'metadata')
+            metadata = job_store.get_metadata(jobid)
             if metadata is None:
                 reply['status'] = 'corrupted'
-
-        reply['json_result'] = metadata
-
-        metadata = None  # Release memory
+            reply['json_result'] = metadata
 
     elif action == 'job_result':
-        if jobid not in collector_data:
+        if not job_store.job_exists(jobid):
             reply['status'] = 'invalid'
-            result = None
+            reply['json_result'] = None
         else:
-            status = collector_data[jobid]['status']
+            status = job_store.get_status(jobid)
+            result_data = job_store.get_result(jobid)
 
-            engine_result = get_shelve_value(collector_shelve_output_filepath, 'result')
-
-            if engine_result is None:
+            if result_data is None:
                 if status in ['corrupted']:
-                    status = 'corrupted'
+                    reply['status'] = 'corrupted'
                 elif status in ['suppressed']:
-                    status = 'suppressed'
+                    reply['status'] = 'suppressed'
                 elif status in ['completed']:
-                    status = 'corrupted'
+                    reply['status'] = 'corrupted'
                 else:
-                    # status = 'pending'
-                    pass
-                reply['status'] = status
-                result = None
+                    reply['status'] = status
+                reply['json_result'] = None
             else:
-                reply['status'] = engine_result['exec_status']
+                reply['status'] = result_data['exec_status']
+                reply['json_result'] = ut.from_json(result_data['json_result'])
 
-                json_result = engine_result['json_result']
-                result = ut.from_json(json_result)
-
-        reply['json_result'] = result
-
-        engine_result = None  # Release memory
+            result_data = None
     else:
-        # Other
         print('...error unknown action={!r}'.format(action))
         reply['status'] = 'error'
 

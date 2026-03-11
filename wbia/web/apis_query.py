@@ -914,7 +914,7 @@ def query_chips_graph(
 ):
     import uuid
 
-    from wbia.unstable.orig_graph_iden import OrigAnnotInference
+    from wbia.algo.graph.orig_graph_iden import OrigAnnotInference
 
     def convert_to_uuid(nid):
         try:

@@ -90,25 +90,7 @@ RUN updatedb
 
 #ENV LD_PRELOAD "${LD_PRELOAD}:/virtualenv/env3/lib/python3.10/site-packages/scikit_image.libs/libgomp-d22c30c5.so.1.0.0"
 
-# Fix PyQt5
-RUN set -ex \
- && apt-get update \
- && apt-get remove -y \
-     python3-pyqt5* \
- && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-     qtbase5-dev \
-     qtchooser \
-     qt5-qmake \
-     qtbase5-dev-tools \
- && /virtualenv/env3/bin/pip uninstall -y \
-     pyqt5 \
- && /virtualenv/env3/bin/pip install --no-cache-dir --upgrade \
-     pyqt5 \
- && apt-get clean \
- && apt-get autoclean \
- && apt-get autoremove -y \
- && rm -rf /var/cache/apt \
- && rm -rf /var/lib/apt/lists/*
+# PyQt5 removed - Docker/web deployment only (no desktop GUI)
 
 # Fix OpenCV
 RUN set -ex \
@@ -118,7 +100,7 @@ RUN set -ex \
      opencv-python-headless \
      opencv-contrib-python-headless \
  && /virtualenv/env3/bin/pip install --no-cache-dir --upgrade \
-     opencv-contrib-python-headless \
+     opencv-contrib-python-headless==4.7.0.72 \
  && /virtualenv/env3/bin/pip uninstall -y \
      nvidia_cublas_cu11 \
  && /virtualenv/env3/bin/pip install --no-cache-dir --force-reinstall \
@@ -138,6 +120,8 @@ RUN set -ex \
  && find /wbia/wildbook* -name '*.a' -print  | grep -v "cpython-310-x86_64-linux-gnu" | grep -v "cpython-310-aarch64-linux-gnu.so" | xargs -i /bin/bash -c 'echo {} && ld -d {}' \
  && find /wbia/wildbook* -name '*.so' -print | grep -v "cpython-310-x86_64-linux-gnu" | grep -v "cpython-310-aarch64-linux-gnu.so" | xargs -i /bin/bash -c 'echo {} && ld -d {}'
 
+# Strip git history from source repos — not needed at runtime, saves ~1-2GB
+RUN find /wbia -name '.git' -type d -exec rm -rf {} + 2>/dev/null; true
 
 # Undo Fix
 ENV LD_PRELOAD ""

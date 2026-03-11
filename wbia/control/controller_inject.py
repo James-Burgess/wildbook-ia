@@ -107,21 +107,11 @@ WEB_DEBUG_INCLUDE_TRACE = True
 
 CONTROLLER_CLASSNAME = 'IBEISController'
 
-MICROSOFT_API_ENABLED = ut.get_argflag('--web') and ut.get_argflag(
-    '--microsoft'
-)  # True == Microsoft Deployment (i.e., only allow MICROSOFT_API_PREFIX prefix below)
+MICROSOFT_API_ENABLED = False  # Microsoft API removed
 MICROSOFT_API_PREFIX = '/v0.1/wildbook/'
-MICROSOFT_API_DEBUG = True
 
-# SCOUT_API_ENABLED = ut.get_argflag('--web') and ut.get_argflag(
-#     '--scout'
-# )  # True == Scout Deployment (i.e., only allow SCOUT_API_PREFIX prefix below)
-SCOUT_API_ENABLED = True
+SCOUT_API_ENABLED = os.environ.get('SCOUT_API_ENABLED', 'false').lower() in ('true', '1', 'yes')
 SCOUT_API_PREFIX = '/api/scout/'
-SCOUT_API_DEBUG = True
-
-# if MICROSOFT_API_ENABLED or SCOUT_API_ENABLED:
-#     WEB_DEBUG_INCLUDE_TRACE = MICROSOFT_API_DEBUG or SCOUT_API_DEBUG
 
 
 STRICT_VERSION_API = (

@@ -191,7 +191,6 @@ REGISTERED_DOCTEST_EXPERIMENTS = [
     ),
     ('wbia.expt.experiment_drawing', 'draw_match_cases', ['draw_cases', 'cases']),
     ('wbia.expt.experiment_drawing', 'draw_casetag_hist', ['taghist']),
-    ('wbia.expt.old_storage', 'draw_results'),
     ('wbia.expt.experiment_drawing', 'draw_rank_cmc', ['rank_cmc']),
     ('wbia.other.dbinfo', 'get_dbinfo'),
     ('wbia.other.dbinfo', 'latex_dbstats'),
