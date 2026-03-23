@@ -1305,7 +1305,11 @@ class JobInterface(object):
         metadata = store.get_metadata(jobid)
         reply = {'status': 'ok', 'jobid': jobid, 'json_result': metadata}
         if metadata is None:
-            reply['status'] = 'corrupted'
+            # Skeleton row from startup batch-register — metadata was never
+            # migrated.  Report as 'working' so callers retry rather than
+            # treating it as corrupted.
+            status = store.get_status(jobid)
+            reply['status'] = 'corrupted' if status == 'corrupted' else 'working'
         return reply
 
     def get_job_result(jobiface, jobid):
@@ -1316,7 +1320,16 @@ class JobInterface(object):
         status = store.get_status(jobid)
         result_data = store.get_result(jobid)
         if result_data is None:
-            if status in ('corrupted', 'completed'):
+            if status == 'completed':
+                # The job row has status='completed' but no json_result.
+                # This can happen when: (a) the job was recovered at startup
+                # from a .pkl file and batch-registered with status only
+                # (result data is not migrated to SQLite), or (b) a stale
+                # WAL snapshot caused get_status() and get_result() to see
+                # different points in time.  Report as 'working' so callers
+                # retry instead of treating the job as corrupted.
+                reply_status = 'working'
+            elif status == 'corrupted':
                 reply_status = 'corrupted'
             elif status == 'suppressed':
                 reply_status = 'suppressed'
