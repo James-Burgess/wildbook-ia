@@ -51,6 +51,7 @@ Notes:
     python -m wbia.web.job_engine job_engine_tester --fg
 """
 import multiprocessing
+import os
 import random
 import re
 import threading
@@ -77,6 +78,17 @@ from wbia.utils import call_houston
 print, rrr, profile = ut.inject2(__name__)  # NOQA
 logger = logging.getLogger('wbia')
 
+# ZMQ receive timeout for engine/collector sockets.  Configurable via
+# WBIA_ENGINE_TIMEOUT_SEC (seconds).  The old 30s default caused crashes
+# on databases with >1000 annotations.  Note: on engine failure, callers
+# will block for this long before receiving a timeout error.
+try:
+    _timeout_sec = int(os.environ.get('WBIA_ENGINE_TIMEOUT_SEC', '300'))
+    if _timeout_sec <= 0:
+        raise ValueError('must be positive')
+except (ValueError, TypeError):
+    _timeout_sec = 300
+_ENGINE_RCVTIMEO_MS = _timeout_sec * 1000
 
 CLASS_INJECT_KEY, register_ibs_method = controller_inject.make_ibs_register_decorator(
     __name__
@@ -976,7 +988,7 @@ class JobInterface(object):
             jobiface.engine_recieve_socket.setsockopt_string(
                 zmq.IDENTITY, 'client{}.engine.DEALER'.format(jobiface.id_)
             )
-            jobiface.engine_recieve_socket.setsockopt(zmq.RCVTIMEO, 30000)
+            jobiface.engine_recieve_socket.setsockopt(zmq.RCVTIMEO, _ENGINE_RCVTIMEO_MS)
             jobiface.engine_recieve_socket.setsockopt(zmq.LINGER, 0)
             jobiface.engine_recieve_socket.connect(jobiface.port_dict['engine_pull_url'])
 
@@ -985,7 +997,7 @@ class JobInterface(object):
             jobiface.collect_recieve_socket.setsockopt_string(
                 zmq.IDENTITY, 'client{}.collect.DEALER'.format(jobiface.id_)
             )
-            jobiface.collect_recieve_socket.setsockopt(zmq.RCVTIMEO, 30000)
+            jobiface.collect_recieve_socket.setsockopt(zmq.RCVTIMEO, _ENGINE_RCVTIMEO_MS)
             jobiface.collect_recieve_socket.setsockopt(zmq.LINGER, 0)
             jobiface.collect_recieve_socket.connect(jobiface.port_dict['collect_pull_url'])
 
@@ -1003,7 +1015,7 @@ class JobInterface(object):
         jobiface.engine_recieve_socket.setsockopt_string(
             zmq.IDENTITY, 'client{}.engine.DEALER'.format(jobiface.id_)
         )
-        jobiface.engine_recieve_socket.setsockopt(zmq.RCVTIMEO, 30000)
+        jobiface.engine_recieve_socket.setsockopt(zmq.RCVTIMEO, _ENGINE_RCVTIMEO_MS)
         jobiface.engine_recieve_socket.setsockopt(zmq.LINGER, 0)
         jobiface.engine_recieve_socket.connect(jobiface.port_dict['engine_pull_url'])
         if jobiface.verbose:
@@ -1017,7 +1029,7 @@ class JobInterface(object):
         jobiface.collect_recieve_socket.setsockopt_string(
             zmq.IDENTITY, 'client{}.collect.DEALER'.format(jobiface.id_)
         )
-        jobiface.collect_recieve_socket.setsockopt(zmq.RCVTIMEO, 30000)
+        jobiface.collect_recieve_socket.setsockopt(zmq.RCVTIMEO, _ENGINE_RCVTIMEO_MS)
         jobiface.collect_recieve_socket.setsockopt(zmq.LINGER, 0)
         jobiface.collect_recieve_socket.connect(jobiface.port_dict['collect_pull_url'])
         if jobiface.verbose:
