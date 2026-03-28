@@ -232,8 +232,22 @@ class JobStore:
     #  Read methods
     # ------------------------------------------------------------------
 
+    def _begin_read(self):
+        """Ensure this connection sees the latest WAL state.
+
+        SQLite WAL readers see a snapshot from when their transaction
+        started.  Python's sqlite3 module with isolation_level='DEFERRED'
+        starts an implicit transaction on the first read and holds it
+        open.  Without an explicit rollback/commit between reads, a
+        long-lived reader connection (like the per-thread JobStore used
+        by web threads) can return stale data — missing results that the
+        collector has already committed.
+        """
+        self._conn.rollback()
+
     def get_status(self, jobid):
         """Return the status string for *jobid*, or None."""
+        self._begin_read()
         row = self._conn.execute(
             'SELECT status FROM jobs WHERE jobid=?', (jobid,)
         ).fetchone()
@@ -241,6 +255,7 @@ class JobStore:
 
     def get_job_ids(self):
         """Return all job IDs sorted by jobcounter."""
+        self._begin_read()
         rows = self._conn.execute(
             'SELECT jobid FROM jobs ORDER BY jobcounter'
         ).fetchall()
@@ -252,6 +267,7 @@ class JobStore:
         Excludes large blob columns (args, kwargs, json_result).
         When *limit* > 0, returns only the *limit* most recent jobs.
         """
+        self._begin_read()
         if limit > 0:
             rows = self._conn.execute(
                 """SELECT jobid, jobcounter, status, action, lane,
@@ -304,6 +320,7 @@ class JobStore:
         Returns ``{(status, endpoint): count}``.  Uses GROUP BY so it
         never loads individual rows — fast even with thousands of jobs.
         """
+        self._begin_read()
         rows = self._conn.execute(
             """SELECT status, request_json, COUNT(*) as cnt
                FROM jobs
@@ -325,6 +342,7 @@ class JobStore:
         Only fetches 'working' jobs (for elapsed) and the most recent
         completed/exception jobs (for runtime/turnaround reporting).
         """
+        self._begin_read()
         rows = self._conn.execute(
             """SELECT status, request_json, time_started,
                       time_runtime_sec, time_turnaround_sec
@@ -361,6 +379,7 @@ class JobStore:
 
         Returns None if the job doesn't exist or has no metadata stored.
         """
+        self._begin_read()
         row = self._conn.execute(
             """SELECT jobcounter, action, lane,
                       callback_url, callback_method, callback_detailed,
@@ -403,6 +422,7 @@ class JobStore:
 
     def get_times(self, jobid):
         """Return just the times dict for a job, or empty dict."""
+        self._begin_read()
         row = self._conn.execute(
             """SELECT time_received, time_started, time_updated,
                       time_completed, time_runtime, time_turnaround,
@@ -426,6 +446,7 @@ class JobStore:
 
     def get_result(self, jobid):
         """Return ``{exec_status, json_result, jobid}`` or None."""
+        self._begin_read()
         row = self._conn.execute(
             'SELECT exec_status, json_result FROM jobs WHERE jobid=?',
             (jobid,),
@@ -440,6 +461,7 @@ class JobStore:
 
     def get_callback_info(self, jobid):
         """Return callback_url, callback_method, callback_detailed or Nones."""
+        self._begin_read()
         row = self._conn.execute(
             'SELECT callback_url, callback_method, callback_detailed FROM jobs WHERE jobid=?',
             (jobid,),
@@ -450,11 +472,13 @@ class JobStore:
 
     def get_max_jobcounter(self):
         """Return the maximum jobcounter, or 0."""
+        self._begin_read()
         row = self._conn.execute('SELECT MAX(jobcounter) FROM jobs').fetchone()
         return row[0] if row and row[0] is not None else 0
 
     def job_exists(self, jobid):
         """Check if a job row exists."""
+        self._begin_read()
         row = self._conn.execute(
             'SELECT 1 FROM jobs WHERE jobid=? LIMIT 1', (jobid,)
         ).fetchone()
