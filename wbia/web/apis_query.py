@@ -1082,36 +1082,6 @@ def query_chips_graph(
                     )
 
                     try:
-                        _, filepath_matches = ensure_review_image(
-                            ibs,
-                            daid,
-                            cm,
-                            qreq_,
-                            view_orientation=view_orientation,
-                            draw_matches=True,
-                            draw_heatmask=False,
-                            use_gradcam=use_gradcam,
-                        )
-                    except Exception as ex:
-                        filepath_matches = None
-                        extern_flag = 'error'
-                        ut.printex(ex, iswarning=True)
-                    log_render_status(
-                        ibs,
-                        ut.timestamp(),
-                        cm.qaid,
-                        daid,
-                        quuid,
-                        duuid,
-                        cm,
-                        qreq_,
-                        view_orientation,
-                        True,
-                        False,
-                        filepath_matches,
-                        extern_flag,
-                    )
-                    try:
                         _, filepath_heatmask = ensure_review_image(
                             ibs,
                             daid,
@@ -1141,44 +1111,6 @@ def query_chips_graph(
                         filepath_heatmask,
                         extern_flag,
                     )
-                    try:
-                        _, filepath_clean = ensure_review_image(
-                            ibs,
-                            daid,
-                            cm,
-                            qreq_,
-                            view_orientation=view_orientation,
-                            draw_matches=False,
-                            draw_heatmask=False,
-                            use_gradcam=use_gradcam,
-                        )
-                    except Exception as ex:
-                        filepath_clean = None
-                        extern_flag = 'error'
-                        ut.printex(ex, iswarning=True)
-                    log_render_status(
-                        ibs,
-                        ut.timestamp(),
-                        cm.qaid,
-                        daid,
-                        quuid,
-                        duuid,
-                        cm,
-                        qreq_,
-                        view_orientation,
-                        False,
-                        False,
-                        filepath_clean,
-                        extern_flag,
-                    )
-
-                    if filepath_matches is not None:
-                        args = (
-                            'matches',
-                            view_orientation,
-                        )
-                        cache_filepath = cache_filepath_fmtstr % args
-                        ut.symlink(filepath_matches, cache_filepath, overwrite=True)
 
                     if filepath_heatmask is not None:
                         args = (
@@ -1187,14 +1119,6 @@ def query_chips_graph(
                         )
                         cache_filepath = cache_filepath_fmtstr % args
                         ut.symlink(filepath_heatmask, cache_filepath, overwrite=True)
-
-                    if filepath_clean is not None:
-                        args = (
-                            'clean',
-                            view_orientation,
-                        )
-                        cache_filepath = cache_filepath_fmtstr % args
-                        ut.symlink(filepath_clean, cache_filepath, overwrite=True)
 
                 extern_flag_list.append(extern_flag)
         else:
