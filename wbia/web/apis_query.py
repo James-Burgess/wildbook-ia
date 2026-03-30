@@ -1068,57 +1068,12 @@ def query_chips_graph(
                 extern_flag = daid in daid_set
 
                 if extern_flag:
-                    logger.info('Rendering match images to disk for daid=%d' % (daid,))
                     duuid = ibs.get_annot_uuids(daid)
-
                     args = (duuid,)
                     dannot_cache_filepath = join(
                         qannot_cache_filepath, 'dannot_uuid_%s' % args
                     )
                     ut.ensuredir(dannot_cache_filepath)
-
-                    cache_filepath_fmtstr = join(
-                        dannot_cache_filepath, 'version_%s_orient_%s.png'
-                    )
-
-                    try:
-                        _, filepath_heatmask = ensure_review_image(
-                            ibs,
-                            daid,
-                            cm,
-                            qreq_,
-                            view_orientation=view_orientation,
-                            draw_matches=False,
-                            draw_heatmask=True,
-                            use_gradcam=use_gradcam,
-                        )
-                    except Exception as ex:
-                        filepath_heatmask = None
-                        extern_flag = 'error'
-                        ut.printex(ex, iswarning=True)
-                    log_render_status(
-                        ibs,
-                        ut.timestamp(),
-                        cm.qaid,
-                        daid,
-                        quuid,
-                        duuid,
-                        cm,
-                        qreq_,
-                        view_orientation,
-                        False,
-                        True,
-                        filepath_heatmask,
-                        extern_flag,
-                    )
-
-                    if filepath_heatmask is not None:
-                        args = (
-                            'heatmask',
-                            view_orientation,
-                        )
-                        cache_filepath = cache_filepath_fmtstr % args
-                        ut.symlink(filepath_heatmask, cache_filepath, overwrite=True)
 
                 extern_flag_list.append(extern_flag)
         else:
@@ -1215,6 +1170,7 @@ def query_chips_graph_match_thumb(
 ):
     from io import BytesIO
 
+    import cv2
     import vtool as vt
     from flask import send_file
     from PIL import Image  # NOQA
@@ -1263,11 +1219,23 @@ def query_chips_graph_match_thumb(
 
     version_path = join(dannot_path, 'version_{}_orient_horizontal.png'.format(version))
     if not exists(version_path):
-        message = (
-            'match thumb version is unknown for the given reference %s, query_annot_uuid %s, database_annot_uuid %s'
-            % (extern_reference, query_annot_uuid, database_annot_uuid)
-        )
-        raise controller_inject.WebMatchThumbException(*args, message=message)
+        # Render on-demand: stack query + database chips side-by-side
+        try:
+            qaid_list = ibs.get_annot_aids_from_uuid([query_annot_uuid])
+            daid_list = ibs.get_annot_aids_from_uuid([database_annot_uuid])
+            qaid = qaid_list[0]
+            daid = daid_list[0]
+            chips = ibs.get_annot_chips([qaid, daid])
+            image = vt.stack_image_list(chips)
+            cv2.imwrite(version_path, image)
+            logger.info('On-demand render: %s' % (version_path,))
+        except Exception as ex:
+            logger.warning('On-demand render failed: %s' % (ex,))
+            message = (
+                'match thumb version is unknown for the given reference %s, query_annot_uuid %s, database_annot_uuid %s'
+                % (extern_reference, query_annot_uuid, database_annot_uuid)
+            )
+            raise controller_inject.WebMatchThumbException(*args, message=message)
 
     # Load image
     image = vt.imread(version_path, orient='auto')
