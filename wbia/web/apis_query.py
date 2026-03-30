@@ -1002,7 +1002,7 @@ def query_chips_graph(
             name_score_list = cm.name_score_list
 
             zipped = sorted(zip(name_score_list, unique_nids), reverse=True)
-            zipped = [(s, nid) for s, nid in zipped if s > 0]
+            zipped = [(s, nid) for s, nid in zipped if s > 0] or zipped[:1]
             n_ = min(n, len(zipped))
             zipped = zipped[:n_]
             logger.info('Top %d names: %r' % (n_, zipped))
@@ -1052,7 +1052,7 @@ def query_chips_graph(
             # Get best annotations
             logger.info('Visualizing annotation matches')
             zipped = sorted(zip(score_list, daid_list_), reverse=True)
-            zipped = [(s, daid) for s, daid in zipped if s > 0]
+            zipped = [(s, daid) for s, daid in zipped if s > 0] or zipped[:1]
             n_ = min(n, len(zipped))
             zipped = zipped[:n_]
             logger.info('Top %d annots: %r' % (n_, zipped))
