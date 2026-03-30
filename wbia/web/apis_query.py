@@ -1063,6 +1063,12 @@ def query_chips_graph(
             daid_set = list(set(daid_set))
             logger.info('Visualizing %d annots: %r' % (len(daid_set), daid_set))
 
+            # HotSpotter (vsmany) needs synchronous heatmask rendering
+            # because the yellow overlay requires the ChipMatch spatial data.
+            # All other algorithms (MiewID, PIE, etc.) defer to on-demand
+            # rendering in /match/thumb/ for faster job completion.
+            is_hotspotter = proot == 'vsmany'
+
             extern_flag_list = []
             for daid in daid_list_:
                 extern_flag = daid in daid_set
@@ -1074,6 +1080,34 @@ def query_chips_graph(
                         qannot_cache_filepath, 'dannot_uuid_%s' % args
                     )
                     ut.ensuredir(dannot_cache_filepath)
+
+                    if is_hotspotter:
+                        cache_filepath_fmtstr = join(
+                            dannot_cache_filepath, 'version_%s_orient_%s.png'
+                        )
+                        try:
+                            _, filepath_heatmask = ensure_review_image(
+                                ibs,
+                                daid,
+                                cm,
+                                qreq_,
+                                view_orientation=view_orientation,
+                                draw_matches=False,
+                                draw_heatmask=True,
+                                use_gradcam=use_gradcam,
+                            )
+                        except Exception as ex:
+                            filepath_heatmask = None
+                            extern_flag = 'error'
+                            ut.printex(ex, iswarning=True)
+
+                        if filepath_heatmask is not None:
+                            args = (
+                                'heatmask',
+                                view_orientation,
+                            )
+                            cache_filepath = cache_filepath_fmtstr % args
+                            ut.symlink(filepath_heatmask, cache_filepath, overwrite=True)
 
                 extern_flag_list.append(extern_flag)
         else:
