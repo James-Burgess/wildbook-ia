@@ -59,6 +59,7 @@ def add_imagesets_json(
 def add_images_json(
     ibs,
     image_uri_list,
+    image_uuid_list=None,
     image_unixtime_list=None,
     image_gps_lat_list=None,
     image_gps_lon_list=None,
@@ -210,7 +211,6 @@ def add_images_json(
     kwargs['sanitize'] = kwargs.get('sanitize', False)
 
     depricated_list = [
-        'image_uuid_list',
         'image_width_list',
         'image_height_list',
         'image_orig_name_list',
@@ -236,6 +236,19 @@ def add_images_json(
     # Rectify values
     image_uri_list = _rectify_uri(image_uri_list, None, expected_length, str)
     image_uri_list = _verify(image_uri_list, 'image_uri_list', expected_length)
+
+    if image_uuid_list is not None:
+        import uuid as uuid_module
+
+        image_uuid_list = [
+            uuid_module.UUID(u) if isinstance(u, str) else u for u in image_uuid_list
+        ]
+        assert len(image_uuid_list) == expected_length, (
+            'image_uuid_list length %d != image_uri_list length %d'
+            % (len(image_uuid_list), expected_length)
+        )
+        kwargs['image_uuid_list'] = image_uuid_list
+
     gid_list = ibs.add_images(image_uri_list, **kwargs)  # NOQA
 
     if image_unixtime_list is not None:
