@@ -240,13 +240,18 @@ def add_images_json(
     if image_uuid_list is not None:
         import uuid as uuid_module
 
-        image_uuid_list = [
-            uuid_module.UUID(u) if isinstance(u, str) else u for u in image_uuid_list
-        ]
-        assert len(image_uuid_list) == expected_length, (
-            'image_uuid_list length %d != image_uri_list length %d'
-            % (len(image_uuid_list), expected_length)
-        )
+        if len(image_uuid_list) != expected_length:
+            raise ValueError(
+                'image_uuid_list length %d != image_uri_list length %d'
+                % (len(image_uuid_list), expected_length)
+            )
+        try:
+            image_uuid_list = [
+                uuid_module.UUID(u) if isinstance(u, str) else u
+                for u in image_uuid_list
+            ]
+        except (ValueError, AttributeError) as ex:
+            raise ValueError('Invalid UUID in image_uuid_list: %s' % (ex,))
         kwargs['image_uuid_list'] = image_uuid_list
 
     gid_list = ibs.add_images(image_uri_list, **kwargs)  # NOQA
