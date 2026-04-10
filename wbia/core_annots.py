@@ -1861,7 +1861,8 @@ def compute_classifications(depc, aid_list, config=None):
             'chips', aid_list, 'img', config=config2, read_extern=False, ensure=True
         )
 
-        # Filter out annotations with missing chip paths
+        # Filter out annotations with missing chip paths; yield None for
+        # skipped rows so the depcache skips them without caching a fake result.
         valid_indices = set()
         skipped_aids = []
         for i, p in enumerate(chip_filepath_list):
@@ -1883,14 +1884,13 @@ def compute_classifications(depc, aid_list, config=None):
         else:
             valid_results = []
 
-        # Reconstruct full result list with defaults for skipped annotations
         valid_iter = iter(valid_results)
         result_list = []
         for i in range(len(chip_filepath_list)):
             if i in valid_indices:
                 result_list.append(next(valid_iter))
             else:
-                result_list.append((0.0, 'UNKNOWN'))
+                result_list.append(None)
     else:
         raise ValueError(
             'specified classifier algo is not supported in config = {!r}'.format(config)
@@ -2101,14 +2101,13 @@ def compute_labels_annotations(depc, aid_list, config=None):
         else:
             valid_results = []
 
-        default_label = (0.0, 'UNKNOWN', None, None, 0.0, {})
         valid_iter = iter(valid_results)
         result_gen = []
         for i in range(len(chip_filepath_list)):
             if i in valid_indices:
                 result_gen.append(next(valid_iter))
             else:
-                result_gen.append(default_label)
+                result_gen.append(None)
 
     elif config['labeler_algo'] in ['densenet']:
         from wbia.algo.detect import densenet
@@ -2150,15 +2149,13 @@ def compute_labels_annotations(depc, aid_list, config=None):
             else:
                 valid_results = []
 
-            # Reconstruct full results with defaults for skipped annotations
-            default_label = (0.0, 'UNKNOWN', None, None, 0.0, {})
             valid_iter = iter(valid_results)
             result_gen = []
             for i in range(len(chip_filepath_list)):
                 if i in valid_indices:
                     result_gen.append(next(valid_iter))
                 else:
-                    result_gen.append(default_label)
+                    result_gen.append(None)
         else:
             labeler_weight_filepath = config['labeler_weight_filepath']
             labeler_weight_filepath = labeler_weight_filepath.strip()
