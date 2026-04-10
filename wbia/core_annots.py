@@ -353,11 +353,35 @@ def compute_chip(depc, aid_list, config=None):
     bbox_list = ibs.get_annot_bboxes(aid_list)
     theta_list = ibs.get_annot_thetas(aid_list)
 
-    result_list = gen_chip_configure_and_compute(
-        ibs, gid_list, aid_list, bbox_list, theta_list, config
-    )
-    for result in result_list:
-        yield result
+    # Filter out annotations with zero-area bounding boxes.  We must still
+    # yield one result per input aid so the depcache stays aligned, so yield
+    # None for invalid annotations (the depcache's filter_Nones handles them).
+    bbox_sizes = ut.take_column(bbox_list, [2, 3])
+    valid_flags = [w != 0 and h != 0 for (w, h) in bbox_sizes]
+    invalid_aids = ut.compress(aid_list, [not f for f in valid_flags])
+    if len(invalid_aids) > 0:
+        logger.warning(
+            'Skipping %d annotations with zero-area bounding boxes: %r'
+            % (len(invalid_aids), invalid_aids)
+        )
+
+    valid_gids = ut.compress(gid_list, valid_flags)
+    valid_aids = ut.compress(aid_list, valid_flags)
+    valid_bboxes = ut.compress(bbox_list, valid_flags)
+    valid_thetas = ut.compress(theta_list, valid_flags)
+
+    # Build a lookup from aid -> result for valid annotations
+    valid_results = {}
+    if len(valid_aids) > 0:
+        result_list = gen_chip_configure_and_compute(
+            ibs, valid_gids, valid_aids, valid_bboxes, valid_thetas, config
+        )
+        for aid, result in zip(valid_aids, result_list):
+            valid_results[aid] = result
+
+    # Yield in original order: real result for valid aids, None for invalid
+    for aid in aid_list:
+        yield valid_results.get(aid, None)
     logger.info('Done Preprocessing Chips')
 
 
