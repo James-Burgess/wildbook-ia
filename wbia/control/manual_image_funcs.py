@@ -381,6 +381,7 @@ def add_images(
     ensure_unique=False,
     ensure_loadable=True,
     ensure_exif=True,
+    image_uuid_list=None,
     **kwargs,
 ):
     r"""
@@ -459,6 +460,25 @@ def add_images(
                 cache_uri_dict[uri_] = gpath_
 
     logger.info('Using cache_uri_dict = {}'.format(ut.repr3(cache_uri_dict)))
+
+    # Override hash-computed UUIDs with caller-provided ones.
+    # A None element means "use the hash-computed UUID for this image".
+    if image_uuid_list is not None:
+        if len(image_uuid_list) != len(params_list):
+            raise ValueError(
+                'image_uuid_list length %d != params_list length %d'
+                % (len(image_uuid_list), len(params_list))
+            )
+        new_params_list = []
+        for custom_uuid, (gpath_, params_) in zip(image_uuid_list, params_list):
+            if params_ is None and custom_uuid is not None:
+                logger.warning(
+                    'Custom UUID %s dropped: image failed to load' % (custom_uuid,)
+                )
+            elif params_ is not None and custom_uuid is not None:
+                params_ = (custom_uuid,) + params_[1:]
+            new_params_list.append((gpath_, params_))
+        params_list = new_params_list
 
     # <DEBUG>
     debug = False

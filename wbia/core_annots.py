@@ -353,11 +353,35 @@ def compute_chip(depc, aid_list, config=None):
     bbox_list = ibs.get_annot_bboxes(aid_list)
     theta_list = ibs.get_annot_thetas(aid_list)
 
-    result_list = gen_chip_configure_and_compute(
-        ibs, gid_list, aid_list, bbox_list, theta_list, config
-    )
-    for result in result_list:
-        yield result
+    # Filter out annotations with zero-area bounding boxes.  We must still
+    # yield one result per input aid so the depcache stays aligned, so yield
+    # None for invalid annotations (the depcache's filter_Nones handles them).
+    bbox_sizes = ut.take_column(bbox_list, [2, 3])
+    valid_flags = [w != 0 and h != 0 for (w, h) in bbox_sizes]
+    invalid_aids = ut.compress(aid_list, [not f for f in valid_flags])
+    if len(invalid_aids) > 0:
+        logger.warning(
+            'Skipping %d annotations with zero-area bounding boxes: %r'
+            % (len(invalid_aids), invalid_aids)
+        )
+
+    valid_gids = ut.compress(gid_list, valid_flags)
+    valid_aids = ut.compress(aid_list, valid_flags)
+    valid_bboxes = ut.compress(bbox_list, valid_flags)
+    valid_thetas = ut.compress(theta_list, valid_flags)
+
+    # Build a lookup from aid -> result for valid annotations
+    valid_results = {}
+    if len(valid_aids) > 0:
+        result_list = gen_chip_configure_and_compute(
+            ibs, valid_gids, valid_aids, valid_bboxes, valid_thetas, config
+        )
+        for aid, result in zip(valid_aids, result_list):
+            valid_results[aid] = result
+
+    # Yield in original order: real result for valid aids, None for invalid
+    for aid in aid_list:
+        yield valid_results.get(aid, None)
     logger.info('Done Preprocessing Chips')
 
 
@@ -1836,7 +1860,37 @@ def compute_classifications(depc, aid_list, config=None):
         chip_filepath_list = depc.get_property(
             'chips', aid_list, 'img', config=config2, read_extern=False, ensure=True
         )
-        result_list = densenet.test(chip_filepath_list, **config)  # yield detections
+
+        # Filter out annotations with missing chip paths; yield None for
+        # skipped rows so the depcache skips them without caching a fake result.
+        valid_indices = set()
+        skipped_aids = []
+        for i, p in enumerate(chip_filepath_list):
+            if p is not None:
+                valid_indices.add(i)
+            else:
+                skipped_aids.append(aid_list[i])
+        if len(valid_indices) < len(chip_filepath_list):
+            logger.warning(
+                'Skipping %d/%d annotations with missing chip paths: aids=%r'
+                % (len(skipped_aids), len(chip_filepath_list), skipped_aids)
+            )
+            valid_chip_list = [chip_filepath_list[i] for i in sorted(valid_indices)]
+        else:
+            valid_chip_list = chip_filepath_list
+
+        if valid_chip_list:
+            valid_results = list(densenet.test(valid_chip_list, **config))
+        else:
+            valid_results = []
+
+        valid_iter = iter(valid_results)
+        result_list = []
+        for i in range(len(chip_filepath_list)):
+            if i in valid_indices:
+                result_list.append(next(valid_iter))
+            else:
+                result_list.append(None)
     else:
         raise ValueError(
             'specified classifier algo is not supported in config = {!r}'.format(config)
@@ -2019,11 +2073,41 @@ def compute_labels_annotations(depc, aid_list, config=None):
         chip_filepath_list = depc.get_property(
             'chips', aid_list, 'img', config=config_, read_extern=False, ensure=True
         )
+
+        # Filter out annotations with missing chip paths
+        valid_indices = set()
+        skipped_aids = []
+        for i, p in enumerate(chip_filepath_list):
+            if p is not None:
+                valid_indices.add(i)
+            else:
+                skipped_aids.append(aid_list[i])
+        if len(valid_indices) < len(chip_filepath_list):
+            logger.warning(
+                'Skipping %d/%d annotations with missing chip paths: aids=%r'
+                % (len(skipped_aids), len(chip_filepath_list), skipped_aids)
+            )
+            valid_chip_list = [chip_filepath_list[i] for i in sorted(valid_indices)]
+        else:
+            valid_chip_list = chip_filepath_list
+
         config = dict(config)
         config['classifier_weight_filepath'] = config['labeler_weight_filepath']
-        result_gen = efficientnet.test_dict(
-            chip_filepath_list, return_dict=True, **config
-        )
+
+        if valid_chip_list:
+            valid_results = list(efficientnet.test_dict(
+                valid_chip_list, return_dict=True, **config
+            ))
+        else:
+            valid_results = []
+
+        valid_iter = iter(valid_results)
+        result_gen = []
+        for i in range(len(chip_filepath_list)):
+            if i in valid_indices:
+                result_gen.append(next(valid_iter))
+            else:
+                result_gen.append(None)
 
     elif config['labeler_algo'] in ['densenet']:
         from wbia.algo.detect import densenet
@@ -2037,11 +2121,41 @@ def compute_labels_annotations(depc, aid_list, config=None):
             chip_filepath_list = depc.get_property(
                 'chips', aid_list, 'img', config=config_, read_extern=False, ensure=True
             )
+
+            # Filter out annotations with missing chip paths
+            valid_indices = set()
+            skipped_aids = []
+            for i, p in enumerate(chip_filepath_list):
+                if p is not None:
+                    valid_indices.add(i)
+                else:
+                    skipped_aids.append(aid_list[i])
+            if len(valid_indices) < len(chip_filepath_list):
+                logger.warning(
+                    'Skipping %d/%d annotations with missing chip paths: aids=%r'
+                    % (len(skipped_aids), len(chip_filepath_list), skipped_aids)
+                )
+                valid_chip_list = [chip_filepath_list[i] for i in sorted(valid_indices)]
+            else:
+                valid_chip_list = chip_filepath_list
+
             config = dict(config)
             config['classifier_weight_filepath'] = config['labeler_weight_filepath']
-            result_gen = densenet.test_dict(
-                chip_filepath_list, return_dict=True, **config
-            )
+
+            if valid_chip_list:
+                valid_results = list(densenet.test_dict(
+                    valid_chip_list, return_dict=True, **config
+                ))
+            else:
+                valid_results = []
+
+            valid_iter = iter(valid_results)
+            result_gen = []
+            for i in range(len(chip_filepath_list)):
+                if i in valid_indices:
+                    result_gen.append(next(valid_iter))
+                else:
+                    result_gen.append(None)
         else:
             labeler_weight_filepath = config['labeler_weight_filepath']
             labeler_weight_filepath = labeler_weight_filepath.strip()
